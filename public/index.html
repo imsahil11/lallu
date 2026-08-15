@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lallu 🎬 — Movies for My Bestie</title>
+  <meta name="description" content="Lallu — Search, stream and download movies & web series instantly. Made with 💜" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Animated BG -->
+  <div class="bg-ambient">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="grid-overlay"></div>
+  </div>
+
+  <!-- Navbar -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <div class="nav-logo" id="navLogo">
+        <div class="logo-icon">🎬</div>
+        <span class="logo-text">Lallu</span>
+      </div>
+      <div class="nav-search-pill" id="navSearchTrigger">
+        <span>🔍</span>
+        <span>Search karo kuch bhi...</span>
+        <kbd>⌘K</kbd>
+      </div>
+    </div>
+  </nav>
+
+  <div class="app-container">
+
+    <!-- ── SCREEN 1: Hero ── -->
+    <div class="screen active" id="screen-hero">
+      <div class="hero-content">
+
+        <div class="hero-badge">
+          <span class="badge-dot"></span>
+          <span>Tumhaara personal movie theater 🍿</span>
+        </div>
+
+        <h1 class="hero-title">
+          Dekho, Dhundho,
+          <span class="gradient-text">Download Karo 🍿</span>
+        </h1>
+
+        <p class="hero-sub">
+          Koi ad nahi, koi jhanjhat nahi — seedha movie milegi, seedha download hogi ⚡
+        </p>
+
+        <div class="search-wrapper" id="searchWrapper">
+          <div class="search-glow"></div>
+          <div class="search-box">
+            <span class="search-emoji">🔍</span>
+            <input
+              type="text"
+              id="searchInput"
+              class="search-input"
+              placeholder="Movie ya web series ka naam likho..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button class="search-btn" id="searchBtn">
+              Dhundho ✨
+            </button>
+          </div>
+        </div>
+
+        <div class="quick-searches">
+          <span class="qs-label">Try karo 👇</span>
+          <button class="qs-chip" data-query="Pushpa">🌿 Pushpa</button>
+          <button class="qs-chip" data-query="Stree">👻 Stree</button>
+          <button class="qs-chip" data-query="Animal">🐯 Animal</button>
+          <button class="qs-chip" data-query="Avengers">⚡ Avengers</button>
+          <button class="qs-chip" data-query="Jawan">🔥 Jawan</button>
+        </div>
+
+        <p class="hero-footer-note">Lallu ke liye special 💜</p>
+
+      </div>
+    </div>
+
+    <!-- ── SCREEN 2: Search Results ── -->
+    <div class="screen" id="screen-results">
+      <div class="page-header">
+        <button class="back-btn" id="backToHero">← Wapas</button>
+        <div class="page-header-info">
+          <h2 class="page-title">🔍 "<span id="resultsQuery"></span>"</h2>
+          <span class="results-count" id="resultsCount"></span>
+        </div>
+      </div>
+
+      <div class="results-grid" id="resultsGrid"></div>
+
+      <div class="loading-state" id="searchLoading">
+        <div class="spinner-ring"></div>
+        <p>Dhundh raha hun... 🔍</p>
+      </div>
+
+      <div class="empty-state" id="searchEmpty" style="display:none">
+        <div class="empty-icon">😕</div>
+        <h3>Kuch nahi mila yaar</h3>
+        <p>Doosra naam try karo</p>
+      </div>
+    </div>
+
+    <!-- ── SCREEN 3: Files List ── -->
+    <div class="screen" id="screen-files">
+      <div class="page-header">
+        <button class="back-btn" id="backToResults">← Wapas</button>
+        <div class="movie-header-info" id="movieHeaderInfo"></div>
+      </div>
+
+      <div class="files-section">
+        <div class="section-label">🗂️ Available Files</div>
+        <div class="files-list" id="filesList"></div>
+        <div class="loading-state" id="filesLoading">
+          <div class="spinner-ring"></div>
+          <p>Files load ho rahi hain... 📁</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SCREEN 4: Download Page ── -->
+    <div class="screen" id="screen-download">
+      <div class="page-header">
+        <button class="back-btn" id="backToFiles">← Wapas</button>
+      </div>
+      <div class="download-wrap">
+        <div id="downloadCard"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast">
+    <span id="toastMsg">✅ Copied!</span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
