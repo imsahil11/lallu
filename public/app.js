@@ -5,7 +5,16 @@
 
 const $ = id => document.getElementById(id);
 
-const state = { query:'', results:[], currentMovie:null, currentFiles:[], currentSeason:null };
+const state = {
+  query: '',
+  results: [],
+  currentMovie: null,   // { title, info }
+  currentFiles: [],
+  currentSeason: null,
+  currentEpLabel: null,
+  _seasons: [],
+  _episodes: null,      // { hasAll, episodes, poster }
+};
 
 // ── Screens ──────────────────────────────────
 const SCREENS = ['hero','results','files','download'];
@@ -37,12 +46,10 @@ function makeToken(fileUniqueId, chatId, messageId) {
   return (fileUniqueId||'xxx').substring(0,3) + tp + mp;
 }
 function buildUrls(token) {
-  return {
-    download: `https://potterstreaming.mgodyt2.workers.dev/${token}`,
-  };
+  return { download: `https://potterstreaming.mgodyt2.workers.dev/${token}` };
 }
 
-// ── Helpers ──────────────────────────────────
+// ── Helpers ───────────────────────────────────
 function fmtSize(b) {
   if (!b) return '—';
   return b >= 1e9 ? `${(b/1e9).toFixed(2)} GB` : `${Math.round(b/1e6)} MB`;
@@ -68,6 +75,22 @@ function toast(msg, color = 'rgba(16,185,129,0.95)') {
   t.style.background = color;
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2600);
+}
+function setMovieHeader(info) {
+  $('movieHeaderInfo').innerHTML = `
+    ${info.poster ? `<img class="movie-thumb" src="${esc(info.poster)}" alt="" onerror="this.style.display='none'">` : ''}
+    <div>
+      <div class="movie-header-title">${esc(info.title)}</div>
+      ${info.year ? `<div class="movie-header-sub">📅 ${info.year} · ${info.mediaType==='tv' ? '📺 TV Series' : '🎬 Movie'}</div>` : ''}
+    </div>`;
+}
+function showFilesLoading(msg = 'Load ho raha hai... 📁') {
+  $('filesList').innerHTML = '';
+  $('filesLoading').querySelector('p').textContent = msg;
+  $('filesLoading').classList.add('visible');
+}
+function hideFilesLoading() {
+  $('filesLoading').classList.remove('visible');
 }
 
 // ── Search ────────────────────────────────────
@@ -121,99 +144,158 @@ function renderResults(list) {
         <div class="card-title">${esc(m.title)}</div>
         ${m.year ? `<div class="card-year">📅 ${m.year}</div>` : ''}
       </div>`;
-    card.addEventListener('click', () => {
-      loadMedia(m);
-    });
+    card.addEventListener('click', () => onMediaClick(m));
     grid.appendChild(card);
   });
 }
 
-// ── Load Media (Movie or TV) ──────────────────
-async function loadMedia(m) {
+// ── Media Click Entry Point ───────────────────
+async function onMediaClick(m) {
   state.currentMovie = { title: m.title, info: m };
   state.currentSeason = null;
+  state.currentEpLabel = null;
+  state._seasons = [];
+  state._episodes = null;
 
   if (m.mediaType === 'tv') {
-    await loadTVSeries(m);
+    await loadSeasons(m);
   } else {
     const title = m.year ? `${m.title} ${m.year}` : m.title;
-    await loadFiles(title, m);
+    await loadMovieFiles(title, m);
   }
 }
 
-// ── TV Series: Show Season Selector ──────────
-async function loadTVSeries(info) {
+// ─────────────────────────────────────────────
+// STEP 1 (TV): Show Season Selector
+// ─────────────────────────────────────────────
+async function loadSeasons(info) {
   showScreen('files');
-
-  $('movieHeaderInfo').innerHTML = `
-    ${info.poster ? `<img class="movie-thumb" src="${esc(info.poster)}" alt="" onerror="this.style.display='none'">` : ''}
-    <div>
-      <div class="movie-header-title">${esc(info.title)}</div>
-      ${info.year ? `<div class="movie-header-sub">📅 ${info.year} · 📺 TV Series</div>` : ''}
-    </div>`;
-
-  $('filesList').innerHTML = '';
-  $('filesLoading').classList.add('visible');
+  setMovieHeader(info);
+  showFilesLoading('Seasons load ho rahe hain... 📺');
 
   try {
     const res  = await fetch(`/api/seasons?title=${encodeURIComponent(info.title)}`);
     const data = await res.json();
-    $('filesLoading').classList.remove('visible');
+    hideFilesLoading();
 
     if (!data.seasons?.length) {
-      $('filesList').innerHTML = `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Seasons nahi mile</h3><p>Ye abhi available nahi hai</p></div>`;
+      $('filesList').innerHTML = emptyHTML('Seasons nahi mile', 'Ye abhi available nahi hai');
       return;
     }
 
     state._seasons = data.seasons;
     renderSeasonSelector(info, data.seasons);
   } catch {
-    $('filesLoading').classList.remove('visible');
-    $('filesList').innerHTML = `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Error aa gaya</h3><p>Dobara try karo</p></div>`;
+    hideFilesLoading();
+    $('filesList').innerHTML = emptyHTML('Error aa gaya', 'Dobara try karo');
   }
 }
 
 function renderSeasonSelector(info, seasons) {
   const list = $('filesList');
   list.innerHTML = `
-    <div class="tv-season-header">
-      <div class="tv-season-label">📺 Season Select Karo</div>
+    <div class="tv-nav-header">
+      <div class="tv-nav-title">📺 Season Select Karo</div>
     </div>
-    <div class="season-grid" id="seasonGrid"></div>`;
+    <div class="tv-grid" id="tvGrid"></div>`;
 
-  const grid = $('seasonGrid');
+  const grid = $('tvGrid');
   seasons.forEach((s, i) => {
     const btn = document.createElement('button');
-    btn.className = 'season-btn';
+    btn.className = 'tv-btn';
     btn.style.animationDelay = `${i*0.05}s`;
-    btn.innerHTML = `
-      <div class="season-btn-icon">📺</div>
-      <div class="season-btn-label">Season ${s}</div>`;
-    btn.addEventListener('click', () => loadSeasonFiles(info, s));
+    btn.innerHTML = `<div class="tv-btn-icon">📺</div><div class="tv-btn-label">Season ${s}</div>`;
+    btn.addEventListener('click', () => loadEpisodes(info, s));
     grid.appendChild(btn);
   });
 }
 
-// ── Load Season Files ─────────────────────────
-async function loadSeasonFiles(info, season) {
+// ─────────────────────────────────────────────
+// STEP 2 (TV): Show Episode Selector
+// Exactly like Potterflix: "Complete Season" + "Episode 1", "Episode 2"...
+// ─────────────────────────────────────────────
+async function loadEpisodes(info, season) {
   state.currentSeason = season;
-  const tvPath = `${info.title}/${season}/all`;
+  showFilesLoading(`Season ${season} ke episodes load ho rahe hain... 🎬`);
 
-  // Show loading
+  try {
+    const res  = await fetch(`/api/episodes?title=${encodeURIComponent(info.title)}&season=${season}`);
+    const data = await res.json();
+    hideFilesLoading();
+
+    state._episodes = data;
+    renderEpisodeSelector(info, season, data);
+  } catch {
+    hideFilesLoading();
+    $('filesList').innerHTML = emptyHTML('Error aa gaya', 'Dobara try karo');
+  }
+}
+
+function renderEpisodeSelector(info, season, data) {
   const list = $('filesList');
   list.innerHTML = `
-    <div class="tv-season-header">
-      <button class="back-season-btn" id="backToSeasons">← Seasons</button>
-      <div class="tv-season-label">📺 ${esc(info.title)} — Season ${season}</div>
+    <div class="tv-nav-header">
+      <button class="tv-back-btn" id="backToSeasons">← Seasons</button>
+      <div class="tv-nav-title">📺 ${esc(info.title)} — Season ${season}</div>
+    </div>
+    <div class="tv-grid" id="tvGrid"></div>`;
+
+  $('backToSeasons').addEventListener('click', () => {
+    state.currentSeason = null;
+    renderSeasonSelector(info, state._seasons);
+  });
+
+  const grid = $('tvGrid');
+  const buttons = data.buttons || [];
+
+  if (!buttons.length) {
+    list.insertAdjacentHTML('beforeend', emptyHTML('Koi episode nahi mila', 'Ye season abhi available nahi hai'));
+    return;
+  }
+
+  // Render each button exactly as Potterflix shows it
+  buttons.forEach((b, idx) => {
+    const btn = document.createElement('button');
+    // Complete Season gets a highlighted style
+    btn.className = b.isComplete ? 'tv-btn tv-btn-complete' : 'tv-btn';
+    btn.style.animationDelay = `${idx * 0.05}s`;
+    const icon = b.isComplete ? '📦' : '🎬';
+    btn.innerHTML = `<div class="tv-btn-icon">${icon}</div><div class="tv-btn-label">${esc(b.label)}</div>`;
+    btn.addEventListener('click', () => {
+      state.currentEpLabel = b.label;
+      // b.path = "/Mirzapur/2/all" or "/Mirzapur/2/1"
+      // tvPath = "Mirzapur/2/all" (strip leading slash)
+      const tvPath = b.path.replace(/^\//, '');
+      loadTVFiles(info, season, b.seg, b.label, tvPath);
+    });
+    grid.appendChild(btn);
+  });
+}
+
+
+
+// ─────────────────────────────────────────────
+// STEP 3 (TV): Load files for selected episode/all
+// ─────────────────────────────────────────────
+async function loadTVFiles(info, season, epOrAll, label, tvPath) {
+  // tvPath comes directly from Potterflix button path (e.g. "Mirzapur/2/all" or "Mirzapur/2/1")
+  // Fallback: reconstruct if not provided
+  if (!tvPath) tvPath = `${info.title}/${season}/${epOrAll}`;
+
+  const list = $('filesList');
+  list.innerHTML = `
+    <div class="tv-nav-header">
+      <button class="tv-back-btn" id="backToEpisodes">← Episodes</button>
+      <div class="tv-nav-title">🎬 ${esc(info.title)} — S${season} · ${esc(label)}</div>
     </div>`;
 
   const loading = document.createElement('div');
   loading.className = 'loading-state visible';
-  loading.innerHTML = '<div class="spinner-ring"></div><p>Episodes load ho rahe hain... 📁</p>';
+  loading.innerHTML = '<div class="spinner-ring"></div><p>Files load ho rahi hain... 📁</p>';
   list.appendChild(loading);
 
-  $('backToSeasons').addEventListener('click', () => {
-    renderSeasonSelector(info, state._seasons);
+  $('backToEpisodes').addEventListener('click', () => {
+    renderEpisodeSelector(info, season, state._episodes);
   });
 
   try {
@@ -222,119 +304,48 @@ async function loadSeasonFiles(info, season) {
     loading.remove();
 
     if (!data.files?.length) {
-      list.insertAdjacentHTML('beforeend', `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Koi file nahi mili</h3><p>Ye season abhi available nahi hai</p></div>`);
+      list.insertAdjacentHTML('beforeend', emptyHTML('Koi file nahi mili', 'Ye abhi available nahi hai'));
       return;
     }
 
     state.currentFiles = data.files;
-    renderTVFiles(data.files, season, info, list);
+    renderFilesList(data.files, list);
   } catch {
     loading.remove();
-    list.insertAdjacentHTML('beforeend', `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Error aa gaya</h3><p>Dobara try karo</p></div>`);
+    list.insertAdjacentHTML('beforeend', emptyHTML('Error aa gaya', 'Dobara try karo'));
   }
 }
 
-function renderTVFiles(files, season, info, listEl) {
-  // Check if any file has a real episode number
-  const hasEpisodeNumbers = files.some(f => f.episode !== null && f.episode > 0);
-
-  if (hasEpisodeNumbers) {
-    // ── Mode A: Group by individual episode ──────────────
-    const byEpisode = {};
-    files.forEach(f => {
-      const ep = f.episode ?? 0;
-      if (!byEpisode[ep]) byEpisode[ep] = [];
-      byEpisode[ep].push(f);
-    });
-    const episodes = Object.keys(byEpisode).map(Number).sort((a,b) => a-b);
-
-    if (byEpisode[0]?.length) {
-      const section = document.createElement('div');
-      section.className = 'ep-section';
-      section.innerHTML = `<div class="ep-section-label">📦 Complete Season ${season} Pack</div>`;
-      [...byEpisode[0]].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => section.appendChild(makeFileCard(f,i)));
-      listEl.appendChild(section);
-    }
-    episodes.filter(ep => ep > 0).forEach(ep => {
-      const section = document.createElement('div');
-      section.className = 'ep-section';
-      section.innerHTML = `<div class="ep-section-label">🎬 Episode ${ep}</div>`;
-      [...byEpisode[ep]].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => section.appendChild(makeFileCard(f,i)));
-      listEl.appendChild(section);
-    });
-
-  } else {
-    // ── Mode B: No episode numbers — detect packs from name/caption ──
-    // Parse labels like: "EP 01-05", "EP 06-10", "EP 01 10", "Complete", "Part 1" etc.
-    function getPackLabel(f) {
-      const src = f.caption || f.name || '';
-      // Match "EP 01 05", "EP 01-05", "EP 06 10", "Ep(01-05)" patterns
-      const epRange = src.match(/\bEP?\s*[\(\[]?(\d{1,3})[\s\-–_]+(\d{1,3})[\)\]]?/i);
-      if (epRange) return `Episodes ${parseInt(epRange[1])}–${parseInt(epRange[2])}`;
-      // Single episode reference like "EP 01"
-      const epSingle = src.match(/\bEP?\s*[\(\[]?(\d{1,3})[\)\]]?/i);
-      if (epSingle) return `Episode ${parseInt(epSingle[1])}`;
-      // Part label
-      const part = src.match(/\bPart\s*(\d+)\b/i);
-      if (part) return `Part ${part[1]}`;
-      // Complete / All
-      if (/\bComplete\b|\bAll\b/i.test(src)) return `Complete Season ${season}`;
-      return `Season ${season} Pack`;
-    }
-
-    // Group by detected label
-    const byLabel = {};
-    files.forEach(f => {
-      const label = getPackLabel(f);
-      if (!byLabel[label]) byLabel[label] = [];
-      byLabel[label].push(f);
-    });
-
-    // Sort labels: "Episodes X-Y" by start number, then "Complete", then others
-    const sortedLabels = Object.keys(byLabel).sort((a,b) => {
-      const getNum = s => { const m = s.match(/(\d+)/); return m ? parseInt(m[1]) : 9999; };
-      if (a.startsWith('Complete') || a.startsWith('Season')) return 1;
-      if (b.startsWith('Complete') || b.startsWith('Season')) return -1;
-      return getNum(a) - getNum(b);
-    });
-
-    sortedLabels.forEach(label => {
-      const section = document.createElement('div');
-      section.className = 'ep-section';
-      section.innerHTML = `<div class="ep-section-label">📦 ${label}</div>`;
-      [...byLabel[label]].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => section.appendChild(makeFileCard(f,i)));
-      listEl.appendChild(section);
-    });
-  }
-}
-
-
-// ── Files (for movies) ────────────────────────
-async function loadFiles(title, info) {
-  state.currentMovie = { title, info };
+// ─────────────────────────────────────────────
+// Movie Files
+// ─────────────────────────────────────────────
+async function loadMovieFiles(title, info) {
   showScreen('files');
-
-  $('movieHeaderInfo').innerHTML = `
-    ${info.poster ? `<img class="movie-thumb" src="${esc(info.poster)}" alt="" onerror="this.style.display='none'">` : ''}
-    <div>
-      <div class="movie-header-title">${esc(info.title)}</div>
-      ${info.year ? `<div class="movie-header-sub">📅 ${info.year} · ${info.mediaType==='tv' ? '📺 TV Series' : '🎬 Movie'}</div>` : ''}
-    </div>`;
-
-  $('filesList').innerHTML = '';
-  $('filesLoading').classList.add('visible');
+  setMovieHeader(info);
+  showFilesLoading('Files load ho rahi hain... 📁');
 
   try {
     const res  = await fetch(`/api/files?title=${encodeURIComponent(title)}`);
     const data = await res.json();
-    $('filesLoading').classList.remove('visible');
+    hideFilesLoading();
+
     if (!data.files?.length) {
-      $('filesList').innerHTML = `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Koi file nahi mili</h3><p>Ye abhi available nahi hai</p></div>`;
+      $('filesList').innerHTML = emptyHTML('Koi file nahi mili', 'Ye abhi available nahi hai');
       return;
     }
     state.currentFiles = data.files;
-    renderFiles(data.files);
-  } catch { $('filesLoading').classList.remove('visible'); }
+    renderFilesList(data.files, $('filesList'));
+  } catch {
+    hideFilesLoading();
+  }
+}
+
+// ─────────────────────────────────────────────
+// Render file cards
+// ─────────────────────────────────────────────
+function renderFilesList(files, containerEl) {
+  const sorted = [...files].sort((a,b) => (b.quality||0)-(a.quality||0));
+  sorted.forEach((f, i) => containerEl.appendChild(makeFileCard(f, i)));
 }
 
 function makeFileCard(f, i) {
@@ -345,10 +356,15 @@ function makeFileCard(f, i) {
   const langs  = (f.languages||[]).join(' + ') || '—';
   const qual   = f.quality ? `${f.quality}p` : 'HD';
   const size   = fmtSize(f.size);
+
+  // Show both title (file_name style short) and subtitle (caption = full info)
+  // Use caption as main name since it's richer
+  const mainName = f.name || f.caption || '—';
+
   card.innerHTML = `
     <div class="file-icon">🎞️</div>
     <div class="file-info">
-      <div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div>
+      <div class="file-name" title="${esc(mainName)}">${esc(mainName)}</div>
       <div class="file-badges">
         <span class="badge badge-quality">🏆 ${qual}</span>
         <span class="badge badge-size">💾 ${size}</span>
@@ -361,12 +377,8 @@ function makeFileCard(f, i) {
   return card;
 }
 
-function renderFiles(files) {
-  const list   = $('filesList');
-  list.innerHTML = '';
-  [...files].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => {
-    list.appendChild(makeFileCard(f, i));
-  });
+function emptyHTML(title, sub) {
+  return `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>${title}</h3><p>${sub}</p></div>`;
 }
 
 // ── Download Page ─────────────────────────────
@@ -379,12 +391,10 @@ function openDownload(file) {
   $('downloadCard').innerHTML = `
     <div class="dl-card">
       <div class="dl-top-bar"></div>
-
       <div class="dl-header">
         <div class="dl-file-icon">🎬</div>
-        <div class="dl-title">${esc(file.name)}</div>
+        <div class="dl-title">${esc(file.name || file.caption)}</div>
       </div>
-
       <div class="dl-meta">
         <div class="dl-meta-item">
           <span class="dl-meta-emoji">🏆</span>
@@ -402,21 +412,13 @@ function openDownload(file) {
           <span class="dl-meta-val" style="font-size:.7rem">${langs}</span>
         </div>
       </div>
-
       <div class="dl-body">
-
         <div class="dl-info-pill">
           <span>⚡</span>
           <span>Ek click mein <strong>instant links</strong> mil jaayenge — 6 ghante valid hain 🕐</span>
         </div>
-
-        <button class="btn-gen" id="generateBtn">
-          ✨ Links Generate Karo
-        </button>
-
+        <button class="btn-gen" id="generateBtn">✨ Links Generate Karo</button>
         <div class="action-sections" id="actionSections">
-
-          <!-- Download -->
           <div class="action-card download-card-inner">
             <div class="action-card-header">
               <div class="action-icon dl-icon-sm">⬇️</div>
@@ -430,11 +432,7 @@ function openDownload(file) {
               ⬇️ Download Karo
             </a>
           </div>
-
-          <div class="expire-row">
-            ⏱️ <span id="expireText">Links 6 ghante valid hain</span>
-          </div>
-
+          <div class="expire-row">⏱️ <span id="expireText">Links 6 ghante valid hain</span></div>
         </div>
       </div>
     </div>`;
@@ -454,8 +452,10 @@ function generateLinks(file) {
 
   $('actionSections').classList.add('visible');
   $('downloadBtn').href = urls.download;
-
-  $('copyDlBtn').addEventListener('click', () => { copyText(urls.download, 'copyDlBtn'); toast('⬇️ Download link copy ho gaya!'); });
+  $('copyDlBtn').addEventListener('click', () => {
+    copyText(urls.download, 'copyDlBtn');
+    toast('⬇️ Download link copy ho gaya!');
+  });
 
   startCountdown(file);
 }
@@ -512,12 +512,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('backToHero')?.addEventListener('click', () => showScreen('hero'));
   $('backToResults')?.addEventListener('click', () => showScreen('results'));
+
+  // "← Wapas" from files screen — context-aware
   $('backToFiles')?.addEventListener('click', () => {
-    // If we're in an episode view, go back to season selector
-    if (state.currentSeason !== null && state.currentMovie?.info?.mediaType === 'tv') {
-      loadTVSeries(state.currentMovie.info);
-    } else if (state.currentMovie) {
-      showScreen('files');
+    const info = state.currentMovie?.info;
+    if (!info) { showScreen('results'); return; }
+
+    if (info.mediaType === 'tv') {
+      if (state.currentEpLabel) {
+        // Was on files → go back to episode selector
+        renderEpisodeSelector(info, state.currentSeason, state._episodes);
+      } else if (state.currentSeason) {
+        // Was on episode selector → go back to season selector
+        renderSeasonSelector(info, state._seasons);
+      } else {
+        showScreen('results');
+      }
     } else {
       showScreen('results');
     }
