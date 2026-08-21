@@ -877,3 +877,95 @@ body {
   .action-card-info { min-width: 120px; flex: 1 1 100%; } /* Forces title to take full width if space is tight */
   .btn-copy-link { width: auto; flex: 1; justify-content: center; padding: 8px; font-size: 0.75rem; }
 }
+
+/* ── TV Series Season Selector ── */
+.tv-season-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--glass-b);
+  flex-wrap: wrap;
+}
+
+.tv-season-label {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--font2);
+  flex: 1;
+}
+
+.back-season-btn {
+  background: var(--glass);
+  border: 1px solid var(--glass-b);
+  color: var(--purple-l);
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  white-space: nowrap;
+}
+.back-season-btn:hover {
+  background: var(--purple-glow);
+  border-color: var(--purple);
+  color: #fff;
+}
+
+.season-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 12px;
+}
+
+.season-btn {
+  background: var(--glass);
+  border: 1px solid var(--glass-b);
+  border-radius: var(--radius-sm);
+  padding: 18px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font);
+  transition: all 0.22s var(--ease);
+  animation: fadeUp 0.4s var(--ease) both;
+}
+.season-btn:hover {
+  background: var(--glass-h);
+  border-color: var(--purple);
+  box-shadow: 0 0 18px var(--purple-glow);
+  transform: translateY(-3px) scale(1.04);
+}
+.season-btn-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+.season-btn-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ── Episode Sections ── */
+.ep-section {
+  margin-bottom: 20px;
+}
+.ep-section-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--purple-l);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  background: rgba(124, 58, 237, 0.1);
+  border-left: 3px solid var(--purple);
+  border-radius: 0 6px 6px 0;
+}
+

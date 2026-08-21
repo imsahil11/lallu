@@ -5,7 +5,7 @@
 
 const $ = id => document.getElementById(id);
 
-const state = { query:'', results:[], currentMovie:null, currentFiles:[] };
+const state = { query:'', results:[], currentMovie:null, currentFiles:[], currentSeason:null };
 
 // ── Screens ──────────────────────────────────
 const SCREENS = ['hero','results','files','download'];
@@ -122,14 +122,194 @@ function renderResults(list) {
         ${m.year ? `<div class="card-year">📅 ${m.year}</div>` : ''}
       </div>`;
     card.addEventListener('click', () => {
-      const title = m.year ? `${m.title} ${m.year}` : m.title;
-      loadFiles(title, m);
+      loadMedia(m);
     });
     grid.appendChild(card);
   });
 }
 
-// ── Files ─────────────────────────────────────
+// ── Load Media (Movie or TV) ──────────────────
+async function loadMedia(m) {
+  state.currentMovie = { title: m.title, info: m };
+  state.currentSeason = null;
+
+  if (m.mediaType === 'tv') {
+    await loadTVSeries(m);
+  } else {
+    const title = m.year ? `${m.title} ${m.year}` : m.title;
+    await loadFiles(title, m);
+  }
+}
+
+// ── TV Series: Show Season Selector ──────────
+async function loadTVSeries(info) {
+  showScreen('files');
+
+  $('movieHeaderInfo').innerHTML = `
+    ${info.poster ? `<img class="movie-thumb" src="${esc(info.poster)}" alt="" onerror="this.style.display='none'">` : ''}
+    <div>
+      <div class="movie-header-title">${esc(info.title)}</div>
+      ${info.year ? `<div class="movie-header-sub">📅 ${info.year} · 📺 TV Series</div>` : ''}
+    </div>`;
+
+  $('filesList').innerHTML = '';
+  $('filesLoading').classList.add('visible');
+
+  try {
+    const res  = await fetch(`/api/seasons?title=${encodeURIComponent(info.title)}`);
+    const data = await res.json();
+    $('filesLoading').classList.remove('visible');
+
+    if (!data.seasons?.length) {
+      $('filesList').innerHTML = `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Seasons nahi mile</h3><p>Ye abhi available nahi hai</p></div>`;
+      return;
+    }
+
+    state._seasons = data.seasons;
+    renderSeasonSelector(info, data.seasons);
+  } catch {
+    $('filesLoading').classList.remove('visible');
+    $('filesList').innerHTML = `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Error aa gaya</h3><p>Dobara try karo</p></div>`;
+  }
+}
+
+function renderSeasonSelector(info, seasons) {
+  const list = $('filesList');
+  list.innerHTML = `
+    <div class="tv-season-header">
+      <div class="tv-season-label">📺 Season Select Karo</div>
+    </div>
+    <div class="season-grid" id="seasonGrid"></div>`;
+
+  const grid = $('seasonGrid');
+  seasons.forEach((s, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'season-btn';
+    btn.style.animationDelay = `${i*0.05}s`;
+    btn.innerHTML = `
+      <div class="season-btn-icon">📺</div>
+      <div class="season-btn-label">Season ${s}</div>`;
+    btn.addEventListener('click', () => loadSeasonFiles(info, s));
+    grid.appendChild(btn);
+  });
+}
+
+// ── Load Season Files ─────────────────────────
+async function loadSeasonFiles(info, season) {
+  state.currentSeason = season;
+  const tvPath = `${info.title}/${season}/all`;
+
+  // Show loading
+  const list = $('filesList');
+  list.innerHTML = `
+    <div class="tv-season-header">
+      <button class="back-season-btn" id="backToSeasons">← Seasons</button>
+      <div class="tv-season-label">📺 ${esc(info.title)} — Season ${season}</div>
+    </div>`;
+
+  const loading = document.createElement('div');
+  loading.className = 'loading-state visible';
+  loading.innerHTML = '<div class="spinner-ring"></div><p>Episodes load ho rahe hain... 📁</p>';
+  list.appendChild(loading);
+
+  $('backToSeasons').addEventListener('click', () => {
+    renderSeasonSelector(info, state._seasons);
+  });
+
+  try {
+    const res  = await fetch(`/api/files?tvPath=${encodeURIComponent(tvPath)}`);
+    const data = await res.json();
+    loading.remove();
+
+    if (!data.files?.length) {
+      list.insertAdjacentHTML('beforeend', `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Koi file nahi mili</h3><p>Ye season abhi available nahi hai</p></div>`);
+      return;
+    }
+
+    state.currentFiles = data.files;
+    renderTVFiles(data.files, season, info, list);
+  } catch {
+    loading.remove();
+    list.insertAdjacentHTML('beforeend', `<div class="empty-state visible"><div class="empty-icon">😕</div><h3>Error aa gaya</h3><p>Dobara try karo</p></div>`);
+  }
+}
+
+function renderTVFiles(files, season, info, listEl) {
+  // Check if any file has a real episode number
+  const hasEpisodeNumbers = files.some(f => f.episode !== null && f.episode > 0);
+
+  if (hasEpisodeNumbers) {
+    // ── Mode A: Group by individual episode ──────────────
+    const byEpisode = {};
+    files.forEach(f => {
+      const ep = f.episode ?? 0;
+      if (!byEpisode[ep]) byEpisode[ep] = [];
+      byEpisode[ep].push(f);
+    });
+    const episodes = Object.keys(byEpisode).map(Number).sort((a,b) => a-b);
+
+    if (byEpisode[0]?.length) {
+      const section = document.createElement('div');
+      section.className = 'ep-section';
+      section.innerHTML = `<div class="ep-section-label">📦 Complete Season ${season} Pack</div>`;
+      [...byEpisode[0]].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => section.appendChild(makeFileCard(f,i)));
+      listEl.appendChild(section);
+    }
+    episodes.filter(ep => ep > 0).forEach(ep => {
+      const section = document.createElement('div');
+      section.className = 'ep-section';
+      section.innerHTML = `<div class="ep-section-label">🎬 Episode ${ep}</div>`;
+      [...byEpisode[ep]].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => section.appendChild(makeFileCard(f,i)));
+      listEl.appendChild(section);
+    });
+
+  } else {
+    // ── Mode B: No episode numbers — detect packs from name/caption ──
+    // Parse labels like: "EP 01-05", "EP 06-10", "EP 01 10", "Complete", "Part 1" etc.
+    function getPackLabel(f) {
+      const src = f.caption || f.name || '';
+      // Match "EP 01 05", "EP 01-05", "EP 06 10", "Ep(01-05)" patterns
+      const epRange = src.match(/\bEP?\s*[\(\[]?(\d{1,3})[\s\-–_]+(\d{1,3})[\)\]]?/i);
+      if (epRange) return `Episodes ${parseInt(epRange[1])}–${parseInt(epRange[2])}`;
+      // Single episode reference like "EP 01"
+      const epSingle = src.match(/\bEP?\s*[\(\[]?(\d{1,3})[\)\]]?/i);
+      if (epSingle) return `Episode ${parseInt(epSingle[1])}`;
+      // Part label
+      const part = src.match(/\bPart\s*(\d+)\b/i);
+      if (part) return `Part ${part[1]}`;
+      // Complete / All
+      if (/\bComplete\b|\bAll\b/i.test(src)) return `Complete Season ${season}`;
+      return `Season ${season} Pack`;
+    }
+
+    // Group by detected label
+    const byLabel = {};
+    files.forEach(f => {
+      const label = getPackLabel(f);
+      if (!byLabel[label]) byLabel[label] = [];
+      byLabel[label].push(f);
+    });
+
+    // Sort labels: "Episodes X-Y" by start number, then "Complete", then others
+    const sortedLabels = Object.keys(byLabel).sort((a,b) => {
+      const getNum = s => { const m = s.match(/(\d+)/); return m ? parseInt(m[1]) : 9999; };
+      if (a.startsWith('Complete') || a.startsWith('Season')) return 1;
+      if (b.startsWith('Complete') || b.startsWith('Season')) return -1;
+      return getNum(a) - getNum(b);
+    });
+
+    sortedLabels.forEach(label => {
+      const section = document.createElement('div');
+      section.className = 'ep-section';
+      section.innerHTML = `<div class="ep-section-label">📦 ${label}</div>`;
+      [...byLabel[label]].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => section.appendChild(makeFileCard(f,i)));
+      listEl.appendChild(section);
+    });
+  }
+}
+
+
+// ── Files (for movies) ────────────────────────
 async function loadFiles(title, info) {
   state.currentMovie = { title, info };
   showScreen('files');
@@ -157,31 +337,35 @@ async function loadFiles(title, info) {
   } catch { $('filesLoading').classList.remove('visible'); }
 }
 
+function makeFileCard(f, i) {
+  const card = document.createElement('div');
+  card.className = 'file-card';
+  card.style.animationDelay = `${i*0.04}s`;
+  const isDual = (f.languages||[]).length > 1;
+  const langs  = (f.languages||[]).join(' + ') || '—';
+  const qual   = f.quality ? `${f.quality}p` : 'HD';
+  const size   = fmtSize(f.size);
+  card.innerHTML = `
+    <div class="file-icon">🎞️</div>
+    <div class="file-info">
+      <div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div>
+      <div class="file-badges">
+        <span class="badge badge-quality">🏆 ${qual}</span>
+        <span class="badge badge-size">💾 ${size}</span>
+        <span class="badge badge-lang">🎧 ${langs}</span>
+        ${isDual ? '<span class="badge badge-dual">🌍 DUAL</span>' : ''}
+      </div>
+    </div>
+    <div class="file-arrow">›</div>`;
+  card.addEventListener('click', () => openDownload(f));
+  return card;
+}
+
 function renderFiles(files) {
   const list   = $('filesList');
   list.innerHTML = '';
   [...files].sort((a,b) => (b.quality||0)-(a.quality||0)).forEach((f,i) => {
-    const card = document.createElement('div');
-    card.className = 'file-card';
-    card.style.animationDelay = `${i*0.04}s`;
-    const isDual = (f.languages||[]).length > 1;
-    const langs  = (f.languages||[]).join(' + ') || '—';
-    const qual   = f.quality ? `${f.quality}p` : 'HD';
-    const size   = fmtSize(f.size);
-    card.innerHTML = `
-      <div class="file-icon">🎞️</div>
-      <div class="file-info">
-        <div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div>
-        <div class="file-badges">
-          <span class="badge badge-quality">🏆 ${qual}</span>
-          <span class="badge badge-size">💾 ${size}</span>
-          <span class="badge badge-lang">🎧 ${langs}</span>
-          ${isDual ? '<span class="badge badge-dual">🌍 DUAL</span>' : ''}
-        </div>
-      </div>
-      <div class="file-arrow">›</div>`;
-    card.addEventListener('click', () => openDownload(f));
-    list.appendChild(card);
+    list.appendChild(makeFileCard(f, i));
   });
 }
 
@@ -288,7 +472,6 @@ function startCountdown(file) {
       el.textContent = '❌ Links expire ho gaye — dobara generate karo';
       el.style.color = 'var(--red)';
       clearInterval(t);
-      // Reset
       const btn = $('generateBtn');
       if (btn) {
         btn.disabled = false;
@@ -330,7 +513,14 @@ document.addEventListener('DOMContentLoaded', () => {
   $('backToHero')?.addEventListener('click', () => showScreen('hero'));
   $('backToResults')?.addEventListener('click', () => showScreen('results'));
   $('backToFiles')?.addEventListener('click', () => {
-    if (state.currentMovie) showScreen('files'); else showScreen('results');
+    // If we're in an episode view, go back to season selector
+    if (state.currentSeason !== null && state.currentMovie?.info?.mediaType === 'tv') {
+      loadTVSeries(state.currentMovie.info);
+    } else if (state.currentMovie) {
+      showScreen('files');
+    } else {
+      showScreen('results');
+    }
   });
 
   document.addEventListener('keydown', e => {
