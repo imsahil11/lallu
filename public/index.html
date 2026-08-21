@@ -145,6 +145,36 @@
     <span id="toastMsg">✅ Copied!</span>
   </div>
 
+  <!-- Settings Button (bottom-right, admin only) -->
+  <button class="settings-fab" id="settingsFab" title="Admin Panel">⚙️</button>
+
+  <!-- Admin Panel Modal -->
+  <div class="admin-overlay" id="adminOverlay">
+    <div class="admin-modal">
+      <div class="admin-header">
+        <div class="admin-title">🔐 Admin Panel</div>
+        <button class="admin-close" id="adminClose">✕</button>
+      </div>
+
+      <!-- Password Screen -->
+      <div id="adminAuth">
+        <div class="admin-auth-wrap">
+          <div class="admin-lock-icon">🔒</div>
+          <p class="admin-auth-hint">Password daalo</p>
+          <input type="password" class="admin-pass-input" id="adminPassInput" placeholder="••••••••" autocomplete="off" />
+          <button class="admin-pass-btn" id="adminPassBtn">Unlock →</button>
+          <div class="admin-pass-err" id="adminPassErr"></div>
+        </div>
+      </div>
+
+      <!-- Logs Screen (hidden until auth) -->
+      <div id="adminLogs" style="display:none">
+        <div class="admin-stats-row" id="adminStatsRow"></div>
+        <div class="admin-log-list" id="adminLogList"></div>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

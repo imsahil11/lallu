@@ -97,6 +97,7 @@ function hideFilesLoading() {
 async function doSearch(q) {
   if (!q.trim()) return;
   state.query = q.trim();
+  track('search', { query: state.query });
   showScreen('results');
   $('resultsQuery').textContent = state.query;
   $('resultsCount').textContent = '';
@@ -156,6 +157,8 @@ async function onMediaClick(m) {
   state.currentEpLabel = null;
   state._seasons = [];
   state._episodes = null;
+
+  track('movie_click', { title: m.title, year: m.year, type: m.mediaType });
 
   if (m.mediaType === 'tv') {
     await loadSeasons(m);
@@ -447,6 +450,14 @@ function generateLinks(file) {
   btn.textContent = '✅ Links Ready!';
   btn.style.background = 'linear-gradient(135deg,#059669,#10b981)';
 
+  // Track download
+  track('download_click', {
+    title: file.name || file.caption,
+    quality: file.quality,
+    size: fmtSize(file.size),
+    languages: (file.languages || []).join('+'),
+  });
+
   const token = makeToken(file.fileUniqueId, file.chatId, file.messageId);
   const urls  = buildUrls(token);
 
@@ -494,6 +505,120 @@ function startCountdown(file) {
   tick();
 }
 
+// ── Analytics Tracker ─────────────────────────
+// Fire-and-forget — never blocks the UI
+function track(action, data = {}) {
+  fetch('/api/track', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, data }),
+  }).catch(() => {}); // silent fail
+}
+
+// ── Admin Panel ───────────────────────────────
+function openAdminPanel() {
+  $('adminOverlay').classList.add('open');
+  $('adminPassInput').focus();
+}
+function closeAdminPanel() {
+  $('adminOverlay').classList.remove('open');
+  // Reset to auth screen
+  $('adminAuth').style.display = '';
+  $('adminLogs').style.display = 'none';
+  $('adminPassInput').value = '';
+  $('adminPassErr').textContent = '';
+}
+
+async function submitAdminPassword() {
+  const pass = $('adminPassInput').value;
+  const btn  = $('adminPassBtn');
+  if (!pass) return;
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  $('adminPassErr').textContent = '';
+
+  try {
+    const res  = await fetch('/api/admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pass }),
+    });
+    const data = await res.json();
+
+    if (!data.ok) {
+      $('adminPassErr').textContent = '❌ Wrong password';
+      $('adminPassInput').value = '';
+      $('adminPassInput').focus();
+    } else {
+      $('adminAuth').style.display = 'none';
+      $('adminLogs').style.display = 'flex';
+      renderAdminLogs(data.logs || []);
+    }
+  } catch {
+    $('adminPassErr').textContent = '❌ Server error, try again';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Unlock →';
+  }
+}
+
+function actionLabel(action) {
+  const map = {
+    search:    '🔍 Search',
+    movie_click: '🎬 Clicked',
+    season_click: '📺 Season',
+    episode_click: '▶️ Episode',
+    download_click: '⬇️ Download',
+  };
+  return map[action] || action;
+}
+
+function renderAdminLogs(logs) {
+  const statsEl = $('adminStatsRow');
+  const listEl  = $('adminLogList');
+
+  // Stats
+  const total     = logs.length;
+  const searches  = logs.filter(l => l.action === 'search').length;
+  const downloads = logs.filter(l => l.action === 'download_click').length;
+  const devices   = new Set(logs.map(l => l.device)).size;
+
+  statsEl.innerHTML = `
+    <div class="admin-stat"><span class="admin-stat-num">${total}</span>Events</div>
+    <div class="admin-stat"><span class="admin-stat-num">${searches}</span>Searches</div>
+    <div class="admin-stat"><span class="admin-stat-num">${downloads}</span>Downloads</div>
+    <div class="admin-stat"><span class="admin-stat-num">${devices}</span>Devices</div>`;
+
+  if (!logs.length) {
+    listEl.innerHTML = '<div class="admin-empty">📭 Abhi tak koi activity nahi</div>';
+    return;
+  }
+
+  listEl.innerHTML = '';
+  logs.forEach(log => {
+    const entry = document.createElement('div');
+    entry.className = 'admin-log-entry';
+
+    // Build detail string from data
+    const d = log.data || {};
+    let detail = '';
+    if (d.query)   detail = `"${d.query}"`;
+    else if (d.title && d.quality) detail = `${d.title} · ${d.quality}p`;
+    else if (d.title) detail = d.title;
+    else if (d.season) detail = `Season ${d.season}`;
+    else if (d.episode) detail = `Episode ${d.episode}`;
+
+    entry.innerHTML = `
+      <div class="admin-log-top">
+        <span class="admin-log-device">📱 ${esc(log.device)} · ${esc(log.browser)}</span>
+        <span class="admin-log-time">${esc(log.time)}</span>
+      </div>
+      <div class="admin-log-action">${actionLabel(log.action)}${detail ? ` — ` : ''}<span class="admin-log-detail">${esc(detail)}</span></div>
+      <div class="admin-log-detail" style="margin-top:3px;opacity:.6">${esc(log.os)}</div>`;
+    listEl.appendChild(entry);
+  });
+}
+
 // ── Events ────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   const si = $('searchInput');
@@ -513,17 +638,13 @@ document.addEventListener('DOMContentLoaded', () => {
   $('backToHero')?.addEventListener('click', () => showScreen('hero'));
   $('backToResults')?.addEventListener('click', () => showScreen('results'));
 
-  // "← Wapas" from files screen — context-aware
   $('backToFiles')?.addEventListener('click', () => {
     const info = state.currentMovie?.info;
     if (!info) { showScreen('results'); return; }
-
     if (info.mediaType === 'tv') {
       if (state.currentEpLabel) {
-        // Was on files → go back to episode selector
         renderEpisodeSelector(info, state.currentSeason, state._episodes);
       } else if (state.currentSeason) {
-        // Was on episode selector → go back to season selector
         renderSeasonSelector(info, state._seasons);
       } else {
         showScreen('results');
@@ -537,7 +658,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((e.metaKey||e.ctrlKey) && e.key==='k') {
       e.preventDefault(); showScreen('hero'); setTimeout(() => si.focus(), 100);
     }
+    if (e.key === 'Escape') closeAdminPanel();
   });
+
+  // Settings FAB
+  $('settingsFab')?.addEventListener('click', openAdminPanel);
+  $('adminClose')?.addEventListener('click', closeAdminPanel);
+  $('adminOverlay')?.addEventListener('click', e => { if (e.target === $('adminOverlay')) closeAdminPanel(); });
+  $('adminPassBtn')?.addEventListener('click', submitAdminPassword);
+  $('adminPassInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') submitAdminPassword(); });
 
   showScreen('hero');
   si.focus();

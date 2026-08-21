@@ -240,6 +240,150 @@ app.post('/api/gen-link', async (req, res) => {
   }
 });
 
+// ─── Analytics System ────────────────────────────────────────────────────────
+
+// Simple UA parser — no npm needed
+function parseUA(ua = '') {
+  let device = 'Unknown Device';
+  let os     = 'Unknown OS';
+  let browser = 'Unknown Browser';
+
+  // OS
+  if (/Windows NT 10/i.test(ua))        os = 'Windows 11/10';
+  else if (/Windows NT 6\.3/i.test(ua)) os = 'Windows 8.1';
+  else if (/Windows/i.test(ua))         os = 'Windows';
+  else if (/Android (\d+[\.\d]*)/i.test(ua)) {
+    const v = ua.match(/Android ([\d.]+)/i)?.[1] || '';
+    os = `Android ${v}`;
+  }
+  else if (/iPhone OS ([\d_]+)/i.test(ua)) {
+    const v = (ua.match(/iPhone OS ([\d_]+)/i)?.[1] || '').replace(/_/g,'.');
+    os = `iOS ${v}`;
+  }
+  else if (/iPad/i.test(ua))   os = 'iPadOS';
+  else if (/Mac OS X/i.test(ua)) os = 'macOS';
+  else if (/Linux/i.test(ua))  os = 'Linux';
+
+  // Device name
+  if (/SM-([A-Z0-9]+)/i.test(ua)) {
+    const model = ua.match(/SM-([A-Z0-9]+)/i)?.[1] || '';
+    device = `Samsung Galaxy (SM-${model})`;
+  } else if (/Pixel (\d+)/i.test(ua)) {
+    device = `Google Pixel ${ua.match(/Pixel (\d+)/i)?.[1]}`;
+  } else if (/iPhone/i.test(ua))       device = 'iPhone';
+  else if (/iPad/i.test(ua))           device = 'iPad';
+  else if (/ONEPLUS/i.test(ua))        device = 'OnePlus';
+  else if (/Mi\s|Redmi|Xiaomi/i.test(ua)) device = 'Xiaomi/Redmi';
+  else if (/vivo/i.test(ua))           device = 'Vivo';
+  else if (/OPPO/i.test(ua))           device = 'OPPO';
+  else if (/realme/i.test(ua))         device = 'Realme';
+  else if (/Windows/i.test(ua))        device = 'Windows PC';
+  else if (/Mac/i.test(ua))            device = 'Mac';
+  else if (/Linux/i.test(ua))          device = 'Linux PC';
+  else if (/Android/i.test(ua))        device = 'Android Phone';
+
+  // Browser
+  if (/Edg\//i.test(ua))              browser = 'Edge';
+  else if (/OPR\//i.test(ua))         browser = 'Opera';
+  else if (/Chrome\/(\d+)/i.test(ua)) browser = `Chrome ${ua.match(/Chrome\/(\d+)/)?.[1]}`;
+  else if (/Firefox\/(\d+)/i.test(ua))browser = `Firefox ${ua.match(/Firefox\/(\d+)/)?.[1]}`;
+  else if (/Safari\/(\d+)/i.test(ua)) browser = 'Safari';
+
+  return { device, os, browser };
+}
+
+// Format IST timestamp
+function istTime() {
+  return new Date().toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: true,
+  });
+}
+
+// Upstash Redis REST helper — uses env vars set on Vercel
+// Falls back to in-memory array if not configured (local dev)
+const _MEM_LOGS = []; // fallback for local dev
+
+async function redisCmd(...args) {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null; // not configured, use in-memory
+  try {
+    const r = await fetch(`${url}/${args.map(a => encodeURIComponent(a)).join('/')}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return (await r.json()).result;
+  } catch { return null; }
+}
+
+async function saveLog(entry) {
+  const str = JSON.stringify(entry);
+  const configured = !!(process.env.UPSTASH_REDIS_REST_URL);
+  if (configured) {
+    // Push to Redis list, keep last 500 entries
+    await redisCmd('lpush', 'lallu:logs', str);
+    await redisCmd('ltrim', 'lallu:logs', '0', '499');
+  } else {
+    // In-memory fallback (lost on restart — good enough for local testing)
+    _MEM_LOGS.unshift(entry);
+    if (_MEM_LOGS.length > 500) _MEM_LOGS.pop();
+  }
+}
+
+async function getLogs() {
+  const configured = !!(process.env.UPSTASH_REDIS_REST_URL);
+  if (configured) {
+    const raw = await redisCmd('lrange', 'lallu:logs', '0', '199');
+    if (!raw) return [];
+    return (Array.isArray(raw) ? raw : []).map(s => {
+      try { return JSON.parse(s); } catch { return null; }
+    }).filter(Boolean);
+  }
+  return _MEM_LOGS.slice(0, 200);
+}
+
+// ─── POST /api/track ──────────────────────────────────────────────────────────
+// Frontend calls this on: search, movie click, season/episode click, download
+app.post('/api/track', async (req, res) => {
+  try {
+    const ua = req.headers['user-agent'] || '';
+    const { action, data } = req.body || {};
+    if (!action) return res.json({ ok: false });
+
+    const { device, os, browser } = parseUA(ua);
+    const entry = {
+      time: istTime(),
+      ts: Date.now(),
+      device, os, browser,
+      action,
+      data: data || {},
+    };
+
+    await saveLog(entry);
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false });
+  }
+});
+
+// ─── POST /api/admin ──────────────────────────────────────────────────────────
+// Password checked SERVER-SIDE against env var — never sent to frontend
+app.post('/api/admin', async (req, res) => {
+  const { password } = req.body || {};
+  const correct = process.env.ADMIN_PASSWORD || 'lallu2024'; // default for local dev
+  if (password !== correct) {
+    return res.status(401).json({ ok: false, error: 'Wrong password' });
+  }
+  try {
+    const logs = await getLogs();
+    res.json({ ok: true, logs });
+  } catch (e) {
+    res.json({ ok: false, error: 'Failed to fetch logs' });
+  }
+});
+
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
@@ -247,3 +391,4 @@ if (require.main === module) {
   app.listen(PORT, () => console.log(`Server → http://localhost:${PORT}`));
 }
 module.exports = app;
+

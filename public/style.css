@@ -963,3 +963,213 @@ body {
   line-height: 1.3;
 }
 
+/* ── Settings FAB ───────────────────────────── */
+.settings-fab {
+  position: fixed;
+  bottom: 22px;
+  right: 22px;
+  z-index: 900;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(15,15,25,0.7);
+  border: 1px solid var(--glass-b);
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(10px);
+  transition: all 0.2s var(--ease);
+  opacity: 0.45;
+}
+.settings-fab:hover {
+  opacity: 1;
+  border-color: var(--purple);
+  box-shadow: 0 0 16px var(--purple-glow);
+  transform: rotate(60deg);
+}
+
+/* ── Admin Overlay ──────────────────────────── */
+.admin-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(6px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.admin-overlay.open {
+  display: flex;
+}
+.admin-modal {
+  background: var(--card);
+  border: 1px solid var(--glass-b);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 560px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+}
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--glass-b);
+  flex-shrink: 0;
+}
+.admin-title {
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: var(--font2);
+  color: var(--text);
+}
+.admin-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+.admin-close:hover { color: var(--text); background: var(--glass); }
+
+/* Password screen */
+.admin-auth-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 36px 24px;
+}
+.admin-lock-icon { font-size: 2.8rem; }
+.admin-auth-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0;
+}
+.admin-pass-input {
+  width: 100%;
+  max-width: 280px;
+  background: var(--glass);
+  border: 1px solid var(--glass-b);
+  border-radius: 10px;
+  padding: 11px 16px;
+  color: var(--text);
+  font-size: 1rem;
+  text-align: center;
+  letter-spacing: 4px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.admin-pass-input:focus { border-color: var(--purple); }
+.admin-pass-btn {
+  background: linear-gradient(135deg, var(--purple), #9333ea);
+  border: none;
+  border-radius: 10px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 11px 28px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.admin-pass-btn:hover { opacity: 0.88; }
+.admin-pass-err {
+  color: #f87171;
+  font-size: 0.8rem;
+  min-height: 18px;
+}
+
+/* Logs screen */
+#adminLogs {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex: 1;
+}
+.admin-stats-row {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--glass-b);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.admin-stat {
+  background: var(--glass);
+  border: 1px solid var(--glass-b);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 70px;
+}
+.admin-stat-num {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--purple-l);
+  font-family: var(--font2);
+}
+.admin-log-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.admin-log-entry {
+  background: var(--glass);
+  border: 1px solid var(--glass-b);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.8rem;
+}
+.admin-log-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  flex-wrap: wrap;
+}
+.admin-log-device {
+  font-weight: 700;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+.admin-log-time {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.admin-log-action {
+  color: var(--purple-l);
+  font-size: 0.78rem;
+}
+.admin-log-detail {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-top: 2px;
+  word-break: break-word;
+}
+.admin-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 20px;
+  font-size: 0.85rem;
+}
