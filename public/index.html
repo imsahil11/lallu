@@ -2,174 +2,142 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Lallu 🎬 — Movies for My Bestie</title>
-  <meta name="description" content="Lallu — Search, stream and download movies & web series instantly. Made with 💜" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#080c0c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Lallu 🎬</title>
+  <meta name="description" content="Seedha movie dhundho, seedha download karo. Koi ad nahi." />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- Animated BG -->
-  <div class="bg-ambient">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="orb orb-3"></div>
-    <div class="grid-overlay"></div>
-  </div>
-
   <!-- Navbar -->
-  <nav class="navbar">
+  <nav class="nav" id="nav">
     <div class="nav-inner">
-      <div class="nav-logo" id="navLogo">
-        <div class="logo-icon">🎬</div>
-        <span class="logo-text">Lallu</span>
-      </div>
-      <div class="nav-search-pill" id="navSearchTrigger">
-        <span>🔍</span>
-        <span>Search karo kuch bhi...</span>
-        <kbd>⌘K</kbd>
+      <button class="nav-logo" id="navLogo" aria-label="Home">
+        <span class="nav-logo-text">Lallu<span class="nav-logo-dot">.</span></span>
+        <span class="nav-logo-sub">seedha download karo</span>
+      </button>
+      <div class="nav-right">
+        <button class="nav-home-btn" id="navHomeBtn" aria-label="Back to search">
+          ← Search
+        </button>
       </div>
     </div>
   </nav>
 
-  <div class="app-container">
+  <main class="app" id="app">
 
-    <!-- ── SCREEN 1: Hero ── -->
-    <div class="screen active" id="screen-hero">
-      <div class="hero-content">
+    <!-- Screen: Hero -->
+    <section class="screen" id="s-hero" aria-label="Home">
+      <div class="hero">
+        <div class="hero-eyebrow">Tumhara personal movie theater 🍿</div>
+        <h1 class="hero-title">Dhundho.<br><span class="hero-accent">Download Karo.</span></h1>
+        <p class="hero-sub">Koi ad nahi, koi jhanjhat nahi — seedha movie milegi ⚡</p>
 
-        <div class="hero-badge">
-          <span class="badge-dot"></span>
-          <span>Tumhaara personal movie theater 🍿</span>
-        </div>
-
-        <h1 class="hero-title">
-          Dekho, Dhundho,
-          <span class="gradient-text">Download Karo 🍿</span>
-        </h1>
-
-        <p class="hero-sub">
-          Koi ad nahi, koi jhanjhat nahi — seedha movie milegi, seedha download hogi ⚡
-        </p>
-
-        <div class="search-wrapper" id="searchWrapper">
-          <div class="search-glow"></div>
-          <div class="search-box">
-            <span class="search-emoji">🔍</span>
+        <div class="search-wrap" id="heroSearchWrap">
+          <div class="search-box" id="heroSearchBox">
+            <span class="search-icon">🔍</span>
             <input
               type="text"
               id="searchInput"
               class="search-input"
-              placeholder="Movie ya web series ka naam likho..."
+              placeholder="Movie ya web series ka naam..."
               autocomplete="off"
               spellcheck="false"
+              enterkeyhint="search"
             />
-            <button class="search-btn" id="searchBtn">
-              Dhundho ✨
-            </button>
+            <button class="search-btn" id="searchBtn" aria-label="Search">Dhundho</button>
           </div>
         </div>
 
-        <div class="quick-searches">
-          <span class="qs-label">Try karo 👇</span>
-          <button class="qs-chip" data-query="Pushpa">🌿 Pushpa</button>
-          <button class="qs-chip" data-query="Stree">👻 Stree</button>
-          <button class="qs-chip" data-query="Animal">🐯 Animal</button>
-          <button class="qs-chip" data-query="Avengers">⚡ Avengers</button>
-          <button class="qs-chip" data-query="Jawan">🔥 Jawan</button>
+        <div class="chips" role="list" aria-label="Quick searches">
+          <span class="chips-label">Try karo →</span>
+          <button class="chip" data-query="Pushpa 2" role="listitem">🌿 Pushpa 2</button>
+          <button class="chip" data-query="Stree 2" role="listitem">👻 Stree 2</button>
+          <button class="chip" data-query="Animal" role="listitem">🐯 Animal</button>
+          <button class="chip" data-query="Avengers" role="listitem">⚡ Avengers</button>
+          <button class="chip" data-query="Jawan" role="listitem">🔥 Jawan</button>
         </div>
-
-        <p class="hero-footer-note">Lallu ke liye special 💜</p>
-
       </div>
-    </div>
+    </section>
 
-    <!-- ── SCREEN 2: Search Results ── -->
-    <div class="screen" id="screen-results">
-      <div class="page-header">
-        <button class="back-btn" id="backToHero">← Wapas</button>
-        <div class="page-header-info">
+    <!-- Screen: Search Results -->
+    <section class="screen" id="s-results" aria-label="Search results">
+      <div class="page-head">
+        <button class="back-btn" id="backToHero" aria-label="Back">← Wapas</button>
+        <div class="page-head-info">
           <h2 class="page-title">🔍 "<span id="resultsQuery"></span>"</h2>
-          <span class="results-count" id="resultsCount"></span>
+          <span class="results-badge" id="resultsCount"></span>
         </div>
       </div>
-
-      <div class="results-grid" id="resultsGrid"></div>
-
-      <div class="loading-state" id="searchLoading">
-        <div class="spinner-ring"></div>
+      <div class="results-grid" id="resultsGrid" role="list"></div>
+      <div class="state-wrap" id="searchLoading">
+        <div class="spinner" aria-label="Loading"></div>
         <p>Dhundh raha hun... 🔍</p>
       </div>
-
-      <div class="empty-state" id="searchEmpty" style="display:none">
-        <div class="empty-icon">😕</div>
-        <h3>Kuch nahi mila yaar</h3>
+      <div class="state-wrap" id="searchEmpty">
+        <div class="state-icon">😕</div>
+        <h3>Kuch nahi mila</h3>
         <p>Doosra naam try karo</p>
       </div>
-    </div>
+    </section>
 
-    <!-- ── SCREEN 3: Files List ── -->
-    <div class="screen" id="screen-files">
-      <div class="page-header">
-        <button class="back-btn" id="backToResults">← Wapas</button>
-        <div class="movie-header-info" id="movieHeaderInfo"></div>
+    <!-- Screen: Files -->
+    <section class="screen" id="s-files" aria-label="Files">
+      <div class="page-head">
+        <button class="back-btn" id="backToResults" aria-label="Back">← Wapas</button>
+        <div class="movie-head" id="movieHead"></div>
       </div>
-
-      <div class="files-section">
+      <div class="files-wrap">
         <div class="section-label">🗂️ Available Files</div>
         <div class="files-list" id="filesList"></div>
-        <div class="loading-state" id="filesLoading">
-          <div class="spinner-ring"></div>
-          <p>Files load ho rahi hain... 📁</p>
+        <div class="state-wrap" id="filesLoading">
+          <div class="spinner" aria-label="Loading"></div>
+          <p id="filesLoadingMsg">Files load ho rahi hain... 📁</p>
         </div>
       </div>
-    </div>
+    </section>
 
-    <!-- ── SCREEN 4: Download Page ── -->
-    <div class="screen" id="screen-download">
-      <div class="page-header">
-        <button class="back-btn" id="backToFiles">← Wapas</button>
+    <!-- Screen: Download -->
+    <section class="screen" id="s-download" aria-label="Download">
+      <div class="page-head">
+        <button class="back-btn" id="backToFiles" aria-label="Back">← Wapas</button>
       </div>
-      <div class="download-wrap">
-        <div id="downloadCard"></div>
+      <div class="dl-wrap">
+        <div id="dlCard"></div>
       </div>
-    </div>
+    </section>
 
-  </div>
+  </main>
 
   <!-- Toast -->
-  <div class="toast" id="toast">
-    <span id="toastMsg">✅ Copied!</span>
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <span id="toastMsg"></span>
   </div>
 
-  <!-- Settings Button (bottom-right, admin only) -->
-  <button class="settings-fab" id="settingsFab" title="Admin Panel">⚙️</button>
+  <!-- Admin FAB -->
+  <button class="admin-fab" id="adminFab" title="Admin" aria-label="Admin panel">⚙️</button>
 
-  <!-- Admin Panel Modal -->
-  <div class="admin-overlay" id="adminOverlay">
+  <!-- Admin Modal -->
+  <div class="admin-overlay" id="adminOverlay" role="dialog" aria-modal="true" aria-label="Admin Panel">
     <div class="admin-modal">
       <div class="admin-header">
-        <div class="admin-title">🔐 Admin Panel</div>
-        <button class="admin-close" id="adminClose">✕</button>
+        <span class="admin-title">🔐 Admin</span>
+        <button class="admin-close" id="adminClose" aria-label="Close">✕</button>
       </div>
-
-      <!-- Password Screen -->
       <div id="adminAuth">
-        <div class="admin-auth-wrap">
-          <div class="admin-lock-icon">🔒</div>
-          <p class="admin-auth-hint">Password daalo</p>
-          <input type="password" class="admin-pass-input" id="adminPassInput" placeholder="••••••••" autocomplete="off" />
-          <button class="admin-pass-btn" id="adminPassBtn">Unlock →</button>
-          <div class="admin-pass-err" id="adminPassErr"></div>
+        <div class="admin-auth">
+          <div class="admin-lock">🔒</div>
+          <p class="admin-hint">Password daalo</p>
+          <input type="password" class="admin-input" id="adminPassInput" placeholder="••••••••" autocomplete="off" />
+          <button class="admin-submit" id="adminPassBtn">Unlock →</button>
+          <p class="admin-err" id="adminPassErr"></p>
         </div>
       </div>
-
-      <!-- Logs Screen (hidden until auth) -->
-      <div id="adminLogs" style="display:none">
-        <div class="admin-stats-row" id="adminStatsRow"></div>
+      <div id="adminLogs">
+        <div class="admin-stats" id="adminStats"></div>
         <div class="admin-log-list" id="adminLogList"></div>
       </div>
     </div>

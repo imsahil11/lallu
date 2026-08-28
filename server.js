@@ -1,113 +1,273 @@
 const express = require('express');
-const fetch = require('node-fetch');
-const cors = require('cors');
-const path = require('path');
+const fetch   = require('node-fetch');
+const cors    = require('cors');
+const path    = require('path');
 
-const app = express();
-const PORT = 3000;
+const app  = express();
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const _SRC = 'https://potterflixmovies.vercel.app';
-const _DL  = 'https://potterstreaming.mgodyt2.workers.dev';
+// ─── Source constants ─────────────────────────────────────────────────────────
+const SRC = 'https://potterflixmovies.vercel.app';
 
-const _H = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+const HEADERS = {
+  'User-Agent'     : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept'         : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.5',
 };
 
-// ─── Token Generation ────────────────────────────────────────────────────────
-function generateStreamToken(fileUniqueId, chatId, messageId) {
-  const expiry = Math.floor(Date.now() / 1000) + 21600;
-  const timeBuf = new ArrayBuffer(4);
-  new DataView(timeBuf).setUint32(0, expiry, false);
-  const timePart = bufToBase64Url(new Uint8Array(timeBuf));
-  const prefix = fileUniqueId ? fileUniqueId.substring(0, 3) : 'xxx';
-  const cleanChatId = parseInt(chatId.toString().replace('-100', ''), 10) || 0;
-  const msgBuf = new ArrayBuffer(8);
-  const msgView = new DataView(msgBuf);
-  msgView.setUint32(0, cleanChatId, false);
-  msgView.setUint32(4, messageId, false);
-  const msgPart = bufToBase64Url(new Uint8Array(msgBuf));
-  return prefix + timePart + msgPart;
+// Abort fetch after 10 seconds — prevents hanging if upstream is slow
+const srcFetch = (url) => fetch(url, {
+  headers: HEADERS,
+  signal : AbortSignal.timeout(10_000),
+});
+
+// ─── Route cache (60s TTL, in-memory) ────────────────────────────────────────
+const _CACHE     = new Map();
+const _CACHE_TTL = 60_000;
+
+function cacheGet(key) {
+  const e = _CACHE.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > _CACHE_TTL) { _CACHE.delete(key); return null; }
+  return e.val;
+}
+function cacheSet(key, val) {
+  _CACHE.set(key, { val, ts: Date.now() });
+  if (_CACHE.size > 300) {                           // prune stale entries
+    const now = Date.now();
+    _CACHE.forEach((v, k) => { if (now - v.ts > _CACHE_TTL) _CACHE.delete(k); });
+  }
 }
 
-function bufToBase64Url(bytes) {
-  let str = '';
-  bytes.forEach(b => str += String.fromCharCode(b));
-  return Buffer.from(str, 'binary').toString('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
 
-// ─── Extract Next.js RSC data ────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function extractNextData(html) {
   const parts = [];
   const re = /self\.__next_f\.push\(\[1,"(.+?)"\]\)/gs;
   let m;
   while ((m = re.exec(html)) !== null) {
-    try { parts.push(JSON.parse(`"${m[1]}"`)); } catch(e) {}
+    try { parts.push(JSON.parse(`"${m[1]}"`)); } catch (_) {}
   }
   return parts.join('');
 }
 
-// ─── Parse files ─────────────────────────────────────────────────────────────
 function parseFiles(data) {
   const files = [];
-  const fileRe = /\{"_id":"([^"]+)","file_unique_id":"([^"]+)","added_at":([\d.]+)[^}]*?"caption":"((?:[^"\\]|\\.)*?)","chat_id":(-?\d+),"episode":(\d+|null),"file_id":"[^"]+","file_name":"([^"]*)","file_size":(\d+),"languages":\[([^\]]*)\],"message_id":(\d+),"quality":(\d+|null)(?:,"search_content":"[^"]*")?,"season":(\d+|null),"year":(\d+|null)/g;
+  const re = /\{"_id":"([^"]+)","file_unique_id":"([^"]+)","added_at":([\d.]+)[^}]*?"caption":"((?:[^"\\]|\\.)*?)","chat_id":(-?\d+),"episode":(\d+|null),"file_id":"[^"]+","file_name":"([^"]*)","file_size":(\d+),"languages":\[([^\]]*)\],"message_id":(\d+),"quality":(\d+|null)(?:,"search_content":"[^"]*")?,"season":(\d+|null),"year":(\d+|null)/g;
   let m;
-  while ((m = fileRe.exec(data)) !== null) {
+  while ((m = re.exec(data)) !== null) {
     const rawFileName = m[7] || '';
     const caption     = m[4] || '';
-    // caption is always richer — use it when longer, else use file_name
     const displayName = caption.length > rawFileName.length
       ? caption
       : (rawFileName.includes(' ') ? rawFileName : (caption || rawFileName));
-
     files.push({
-      id: m[1], fileUniqueId: m[2], addedAt: parseFloat(m[3]),
-      caption, name: displayName,
-      size: parseInt(m[8]),
-      languages: m[9].replace(/"/g, '').split(',').filter(Boolean),
-      chatId: parseInt(m[5]), messageId: parseInt(m[10]),
-      quality: m[11] !== 'null' ? parseInt(m[11]) : null,
-      episode: m[6] !== 'null' ? parseInt(m[6]) : null,
-      season: m[12] !== 'null' ? parseInt(m[12]) : null,
-      year: m[13] !== 'null' ? parseInt(m[13]) : null,
+      id          : m[1],
+      fileUniqueId: m[2],
+      addedAt     : parseFloat(m[3]),
+      caption,
+      name        : displayName,
+      chatId      : parseInt(m[5]),
+      episode     : m[6]  !== 'null' ? parseInt(m[6])  : null,
+      size        : parseInt(m[8]),
+      languages   : m[9].replace(/"/g, '').split(',').filter(Boolean),
+      messageId   : parseInt(m[10]),
+      quality     : m[11] !== 'null' ? parseInt(m[11]) : null,
+      season      : m[12] !== 'null' ? parseInt(m[12]) : null,
+      year        : m[13] !== 'null' ? parseInt(m[13]) : null,
     });
   }
 
-  // Fallback
+  // Fallback regex
   if (files.length === 0) {
-    const simple = /"_id":"([^"]+)","file_unique_id":"([^"]+)"[^}]*?"caption":"((?:[^"\\]|\\.)*?)"[^}]*?"chat_id":(-?\d+)[^}]*?"file_name":"([^"]*)","file_size":(\d+),"languages":\[([^\]]*)\],"message_id":(\d+),"quality":(\d+|null)[^}]*?"season":(\d+|null)/g;
+    const re2 = /"_id":"([^"]+)","file_unique_id":"([^"]+)"[^}]*?"caption":"((?:[^"\\]|\\.)*?)"[^}]*?"chat_id":(-?\d+)[^}]*?"file_name":"([^"]*)","file_size":(\d+),"languages":\[([^\]]*)\],"message_id":(\d+),"quality":(\d+|null)[^}]*?"season":(\d+|null)/g;
     let s;
-    while ((s = simple.exec(data)) !== null) {
+    while ((s = re2.exec(data)) !== null) {
       const caption = s[3] || '', rawFileName = s[5] || '';
       files.push({
         id: s[1], fileUniqueId: s[2], caption,
-        name: caption.length > rawFileName.length ? caption : (rawFileName || caption),
-        chatId: parseInt(s[4]), size: parseInt(s[6]),
+        name    : caption.length > rawFileName.length ? caption : (rawFileName || caption),
+        chatId  : parseInt(s[4]),
+        size    : parseInt(s[6]),
         languages: s[7].replace(/"/g, '').split(',').filter(Boolean),
         messageId: parseInt(s[8]),
-        quality: s[9] !== 'null' ? parseInt(s[9]) : null,
-        season: s[10] !== 'null' ? parseInt(s[10]) : null,
+        quality : s[9] !== 'null' ? parseInt(s[9]) : null,
+        season  : s[10] !== 'null' ? parseInt(s[10]) : null,
       });
     }
   }
   return files;
 }
 
-// ─── Search API ──────────────────────────────────────────────────────────────
-app.get('/api/search', async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.json({ error: 'Query required' });
+// ─── Device / OS / Browser Parser ────────────────────────────────────────────
+function parseUA(ua = '') {
+  let device  = 'Unknown Device';
+  let os      = 'Unknown OS';
+  let browser = 'Unknown Browser';
+
+  // ── OS ──
+  if (/Windows NT 10/i.test(ua))        os = 'Windows 10/11';
+  else if (/Windows NT 6\.3/i.test(ua)) os = 'Windows 8.1';
+  else if (/Windows/i.test(ua))         os = 'Windows';
+  else if (/Android/i.test(ua)) {
+    const v = (ua.match(/Android ([\d.]+)/i) || [])[1] || '';
+    os = `Android ${v}`.trim();
+  }
+  else if (/iPhone OS/i.test(ua)) {
+    const v = ((ua.match(/iPhone OS ([\d_]+)/i) || [])[1] || '').replace(/_/g, '.');
+    os = `iOS ${v}`.trim();
+  }
+  else if (/iPad/i.test(ua))    os = 'iPadOS';
+  else if (/Mac OS X/i.test(ua)) os = 'macOS';
+  else if (/Linux/i.test(ua))   os = 'Linux';
+
+  // ── Device (Android model — richest first) ──
+  const isAndroid = /Android/i.test(ua);
+  if (isAndroid) {
+    // Google Pixel  →  "Pixel 7a", "Pixel 8 Pro"
+    const pixel = (ua.match(/Pixel ([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
+    if (pixel) {
+      device = `Google Pixel ${pixel.trim()}`;
+    }
+    // Redmi / Xiaomi named models  →  "Redmi Note 12", "Redmi 12C"
+    else if (/Redmi/i.test(ua)) {
+      const model = (ua.match(/Redmi\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `Redmi ${model.trim()}` : 'Xiaomi Redmi';
+    }
+    // POCO  →  "POCO X5 Pro", "POCO M4"
+    else if (/POCO/i.test(ua)) {
+      const model = (ua.match(/POCO\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `POCO ${model.trim()}` : 'POCO Phone';
+    }
+    // Xiaomi Mi series
+    else if (/\bXiaomi\b/i.test(ua)) {
+      const model = (ua.match(/Xiaomi\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `Xiaomi ${model.trim()}` : 'Xiaomi';
+    }
+    // Samsung — decode series from SM-* code
+    else if (/SM-([A-Z0-9]+)/i.test(ua)) {
+      const code  = (ua.match(/SM-([A-Z0-9]+)/i) || [])[1] || '';
+      const first = code[0]?.toUpperCase();
+      const series = {
+        A: 'Galaxy A-series', G: 'Galaxy S-series', S: 'Galaxy S Ultra',
+        M: 'Galaxy M-series', F: 'Galaxy Z-series', N: 'Galaxy Note',
+        J: 'Galaxy J-series', T: 'Galaxy Tab',
+      };
+      device = series[first] ? `Samsung ${series[first]} (SM-${code})` : `Samsung (SM-${code})`;
+    }
+    // OnePlus
+    else if (/OnePlus|ONEPLUS/i.test(ua)) {
+      const model = (ua.match(/(?:OnePlus|ONEPLUS)\s?([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `OnePlus ${model.trim()}` : 'OnePlus';
+    }
+    // Vivo
+    else if (/vivo/i.test(ua)) {
+      const model = (ua.match(/vivo\s+([\w]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `Vivo ${model.trim()}` : 'Vivo';
+    }
+    // OPPO / realme
+    else if (/OPPO/i.test(ua)) {
+      const model = (ua.match(/OPPO\s+([\w]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `OPPO ${model.trim()}` : 'OPPO';
+    }
+    else if (/realme/i.test(ua)) {
+      const model = (ua.match(/realme\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
+      device = model ? `Realme ${model.trim()}` : 'Realme';
+    }
+    else { device = 'Android Phone'; }
+  }
+  else if (/iPhone/i.test(ua)) {
+    // iOS version already in `os`, e.g. "iOS 17.2"
+    device = `iPhone (${os})`;
+  }
+  else if (/iPad/i.test(ua))   device = 'iPad';
+  else if (/Windows/i.test(ua)) device = 'Windows PC';
+  else if (/Mac/i.test(ua))    device = 'Mac';
+  else if (/Linux/i.test(ua))  device = 'Linux PC';
+
+  // ── Browser ──
+  if (/EdgA?\//i.test(ua))            browser = 'Edge';
+  else if (/OPR\//i.test(ua))         browser = 'Opera';
+  else if (/SamsungBrowser/i.test(ua)) browser = 'Samsung Browser';
+  else if (/FBAN|FBIOS/i.test(ua))    browser = 'Facebook App';
+  else if (/Instagram/i.test(ua))     browser = 'Instagram';
+  else if (/Chrome\/([\d]+)/i.test(ua)) {
+    browser = `Chrome ${(ua.match(/Chrome\/([\d]+)/i) || [])[1] || ''}`.trim();
+  }
+  else if (/Firefox\/([\d]+)/i.test(ua)) {
+    browser = `Firefox ${(ua.match(/Firefox\/([\d]+)/i) || [])[1] || ''}`.trim();
+  }
+  else if (/Safari/i.test(ua)) browser = 'Safari';
+
+  return { device, os, browser };
+}
+
+// ─── Timestamp ────────────────────────────────────────────────────────────────
+function istTime() {
+  return new Date().toLocaleString('en-IN', {
+    timeZone : 'Asia/Kolkata',
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: true,
+  });
+}
+
+// ─── Redis / In-memory store ──────────────────────────────────────────────────
+const MEM_LOGS = [];
+
+async function redisCmd(...args) {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
   try {
-    const html = await fetch(`${_SRC}/search?q=${encodeURIComponent(q)}`, { headers: _H }).then(r => r.text());
+    const r = await fetch(
+      `${url}/${args.map(a => encodeURIComponent(a)).join('/')}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    return (await r.json()).result;
+  } catch { return null; }
+}
+
+async function saveLog(entry) {
+  const str = JSON.stringify(entry);
+  if (process.env.UPSTASH_REDIS_REST_URL) {
+    await redisCmd('lpush', 'lallu:logs', str);
+    await redisCmd('ltrim', 'lallu:logs', '0', '999');
+  } else {
+    MEM_LOGS.unshift(entry);
+    if (MEM_LOGS.length > 1000) MEM_LOGS.pop();
+  }
+}
+
+async function getLogs(limit = 200) {
+  if (process.env.UPSTASH_REDIS_REST_URL) {
+    const raw = await redisCmd('lrange', 'lallu:logs', '0', String(limit - 1));
+    if (!raw) return [];
+    return (Array.isArray(raw) ? raw : [])
+      .map(s => { try { return JSON.parse(s); } catch { return null; } })
+      .filter(Boolean);
+  }
+  return MEM_LOGS.slice(0, limit);
+}
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+
+// Search
+app.get('/api/search', async (req, res) => {
+  const { q } = req.query;
+  if (!q) return res.json({ error: 'Query required' });
+  const cKey = `search:${q.toLowerCase().trim()}`;
+  const hit  = cacheGet(cKey);
+  if (hit) return res.json(hit);
+  try {
+    const html = await srcFetch(`${SRC}/search?q=${encodeURIComponent(q)}`).then(r => r.text());
     const data = extractNextData(html);
     const results = [], seen = new Set();
-    const re = /"title":"([^"]+)","posterPath":("([^"]*?)"|null),"rating":([\d.]+),"year":"(\d+)","mediaType":"([^"]+)"/g;
+    const re = /"title":"([^"]+)","posterPath":(\"([^"]*?)\"|null),"rating":([\d.]+),"year":"(\d+)","mediaType":"([^"]+)"/g;
     let m;
     while ((m = re.exec(data)) !== null) {
       const key = `${m[1]}-${m[5]}`;
@@ -115,27 +275,34 @@ app.get('/api/search', async (req, res) => {
       seen.add(key);
       const isTV = m[6] === 'tv';
       results.push({
-        title: m[1],
-        poster: m[3] ? `https://image.tmdb.org/t/p/w500${m[3]}` : null,
-        rating: parseFloat(m[4]).toFixed(1),
-        year: m[5], mediaType: m[6],
-        _href: isTV ? `/${encodeURIComponent(m[1])}` : `/${encodeURIComponent(`${m[1]} ${m[5]}`)}/all`,
+        title    : m[1],
+        poster   : m[3] ? `https://image.tmdb.org/t/p/w342${m[3]}` : null,  // w342 = smaller, faster
+        rating   : parseFloat(m[4]).toFixed(1),
+        year     : m[5],
+        mediaType: m[6],
+        _href    : isTV
+          ? `/${encodeURIComponent(m[1])}`
+          : `/${encodeURIComponent(`${m[1]} ${m[5]}`)}/all`,
       });
     }
-    res.json({ results, query: q });
+    const payload = { results, query: q };
+    cacheSet(cKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('[search]', err.message);
-    res.json({ error: 'Search failed' });
+    res.json({ error: 'Search failed', results: [] });
   }
 });
 
-// ─── Seasons API ─────────────────────────────────────────────────────────────
-// Fetches /Title → returns season numbers
+// Seasons
 app.get('/api/seasons', async (req, res) => {
   const { title } = req.query;
   if (!title) return res.json({ error: 'Title required' });
+  const cKey = `seasons:${title}`;
+  const hit  = cacheGet(cKey);
+  if (hit) return res.json(hit);
   try {
-    const html = await fetch(`${_SRC}/${encodeURIComponent(title)}`, { headers: _H }).then(r => r.text());
+    const html = await srcFetch(`${SRC}/${encodeURIComponent(title)}`).then(r => r.text());
     const seasons = [];
     const re = /href="\/[^"\/]+\/(\d+)"/g;
     let m;
@@ -144,251 +311,137 @@ app.get('/api/seasons', async (req, res) => {
       if (!seasons.includes(s)) seasons.push(s);
     }
     seasons.sort((a, b) => a - b);
-    res.json({ seasons, title });
+    const payload = { seasons, title };
+    cacheSet(cKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('[seasons]', err.message);
     res.json({ error: 'Failed to load seasons', seasons: [] });
   }
 });
 
-// ─── Episodes API ────────────────────────────────────────────────────────────
-// Fetches /Title/Season page — scrapes EXACT button labels & paths from Potterflix.
-// Returns: { buttons: [{label, path, isComplete}], poster }
-// This mirrors what Potterflix actually renders, so labels are never hardcoded.
+// Episodes
 app.get('/api/episodes', async (req, res) => {
   const { title, season } = req.query;
   if (!title || !season) return res.json({ error: 'title and season required' });
+  const cKey = `episodes:${title}:${season}`;
+  const hit  = cacheGet(cKey);
+  if (hit) return res.json(hit);
   try {
-    const html = await fetch(`${_SRC}/${encodeURIComponent(title)}/${season}`, { headers: _H }).then(r => r.text());
-
+    const html = await srcFetch(`${SRC}/${encodeURIComponent(title)}/${season}`).then(r => r.text());
     const buttons = [];
-
-    // Potterflix renders cards like:
-    //   <a href="/Mirzapur/2/all">...<div>Complete Season</div>...</a>
-    //   <a href="/Mirzapur/2/1">...<div>Episode 1</div>...</a>
-    // We match href + the text inside the innermost <div> of that card.
     const linkRe = /href="(\/[^"]+\/\d+\/([^"]+))"[^>]*>[\s\S]*?<div[^>]*class="[^"]*text-2xl[^"]*"[^>]*>([\s\S]*?)<\/div>/g;
     let m;
     while ((m = linkRe.exec(html)) !== null) {
-      const href  = m[1];           // e.g. /Mirzapur/2/all or /Mirzapur/2/1
-      const seg   = m[2];           // "all" or "1"
-      // Clean up label: strip HTML comments, trim whitespace
+      const href  = m[1];
+      const seg   = m[2];
       const label = m[3].replace(/<!--[^>]*-->/g, '').replace(/\s+/g, ' ').trim();
       if (!label) continue;
-      const isComplete = seg === 'all';
-      buttons.push({ label, path: href, seg, isComplete });
+      buttons.push({ label, path: href, seg, isComplete: seg === 'all' });
     }
-
-    // Deduplicate by path
-    const seen = new Set();
+    const seen   = new Set();
     const unique = buttons.filter(b => { if (seen.has(b.path)) return false; seen.add(b.path); return true; });
-
-    // Sort: complete first, then episodes by number
     unique.sort((a, b) => {
       if (a.isComplete) return -1;
       if (b.isComplete) return 1;
       return parseInt(a.seg) - parseInt(b.seg);
     });
-
     const posterMatch = html.match(/image\.tmdb\.org\/t\/p\/w500([^"]+)/);
-    const poster = posterMatch ? `https://image.tmdb.org/t/p/w500${posterMatch[1]}` : null;
-
-    res.json({ buttons: unique, poster, title, season: parseInt(season) });
+    const poster = posterMatch ? `https://image.tmdb.org/t/p/w342${posterMatch[1]}` : null;
+    const payload = { buttons: unique, poster, title, season: parseInt(season) };
+    cacheSet(cKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('[episodes]', err.message);
     res.json({ error: 'Failed to load episodes', buttons: [] });
   }
 });
 
-// ─── Files API ───────────────────────────────────────────────────────────────
-// ?title=Movie Year   → /{title}/all
-// ?tvPath=Title/2/all → fetches that exact path
+// Files
 app.get('/api/files', async (req, res) => {
   const { title, tvPath } = req.query;
   if (!title && !tvPath) return res.json({ error: 'title or tvPath required' });
+  const cKey = `files:${tvPath || title}`;
+  const hit  = cacheGet(cKey);
+  if (hit) return res.json(hit);
   try {
     let url;
     if (tvPath) {
       const parts = tvPath.split('/');
-      url = `${_SRC}/${parts.map(p => encodeURIComponent(p)).join('/')}`;
+      url = `${SRC}/${parts.map(p => encodeURIComponent(p)).join('/')}`;
     } else {
-      url = `${_SRC}/${encodeURIComponent(title)}/all`;
+      url = `${SRC}/${encodeURIComponent(title)}/all`;
     }
-    const html = await fetch(url, { headers: _H }).then(r => r.text());
+    const html = await srcFetch(url).then(r => r.text());
     const data = extractNextData(html);
     const files = parseFiles(data);
     const posterMatch = data.match(/image\.tmdb\.org\/t\/p\/w500([^"]+)/);
-    const poster = posterMatch ? `https://image.tmdb.org/t/p/w500${posterMatch[1]}` : null;
-    res.json({ files, poster, title: title || tvPath });
+    const poster = posterMatch ? `https://image.tmdb.org/t/p/w342${posterMatch[1]}` : null;
+    const payload = { files, poster, title: title || tvPath };
+    cacheSet(cKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('[files]', err.message);
-    res.json({ error: 'Failed to load files' });
+    res.json({ error: 'Failed to load files', files: [] });
   }
 });
 
-// ─── Generate Link ───────────────────────────────────────────────────────────
-app.post('/api/gen-link', async (req, res) => {
-  const { fileUniqueId, chatId, messageId } = req.body;
-  if (!fileUniqueId || !chatId || !messageId)
-    return res.json({ success: false, error: 'Missing params' });
-  try {
-    const token = generateStreamToken(fileUniqueId, chatId, messageId);
-    res.json({ success: true, token, url: `${_DL}/${token}`, expiresIn: 21600 });
-  } catch (err) {
-    console.error('[gen-link]', err.message);
-    res.json({ success: false, error: 'Token generation failed' });
-  }
-});
-
-// ─── Analytics System ────────────────────────────────────────────────────────
-
-// Simple UA parser — no npm needed
-function parseUA(ua = '') {
-  let device = 'Unknown Device';
-  let os     = 'Unknown OS';
-  let browser = 'Unknown Browser';
-
-  // OS
-  if (/Windows NT 10/i.test(ua))        os = 'Windows 11/10';
-  else if (/Windows NT 6\.3/i.test(ua)) os = 'Windows 8.1';
-  else if (/Windows/i.test(ua))         os = 'Windows';
-  else if (/Android (\d+[\.\d]*)/i.test(ua)) {
-    const v = ua.match(/Android ([\d.]+)/i)?.[1] || '';
-    os = `Android ${v}`;
-  }
-  else if (/iPhone OS ([\d_]+)/i.test(ua)) {
-    const v = (ua.match(/iPhone OS ([\d_]+)/i)?.[1] || '').replace(/_/g,'.');
-    os = `iOS ${v}`;
-  }
-  else if (/iPad/i.test(ua))   os = 'iPadOS';
-  else if (/Mac OS X/i.test(ua)) os = 'macOS';
-  else if (/Linux/i.test(ua))  os = 'Linux';
-
-  // Device name
-  if (/SM-([A-Z0-9]+)/i.test(ua)) {
-    const model = ua.match(/SM-([A-Z0-9]+)/i)?.[1] || '';
-    device = `Samsung Galaxy (SM-${model})`;
-  } else if (/Pixel (\d+)/i.test(ua)) {
-    device = `Google Pixel ${ua.match(/Pixel (\d+)/i)?.[1]}`;
-  } else if (/iPhone/i.test(ua))       device = 'iPhone';
-  else if (/iPad/i.test(ua))           device = 'iPad';
-  else if (/ONEPLUS/i.test(ua))        device = 'OnePlus';
-  else if (/Mi\s|Redmi|Xiaomi/i.test(ua)) device = 'Xiaomi/Redmi';
-  else if (/vivo/i.test(ua))           device = 'Vivo';
-  else if (/OPPO/i.test(ua))           device = 'OPPO';
-  else if (/realme/i.test(ua))         device = 'Realme';
-  else if (/Windows/i.test(ua))        device = 'Windows PC';
-  else if (/Mac/i.test(ua))            device = 'Mac';
-  else if (/Linux/i.test(ua))          device = 'Linux PC';
-  else if (/Android/i.test(ua))        device = 'Android Phone';
-
-  // Browser
-  if (/Edg\//i.test(ua))              browser = 'Edge';
-  else if (/OPR\//i.test(ua))         browser = 'Opera';
-  else if (/Chrome\/(\d+)/i.test(ua)) browser = `Chrome ${ua.match(/Chrome\/(\d+)/)?.[1]}`;
-  else if (/Firefox\/(\d+)/i.test(ua))browser = `Firefox ${ua.match(/Firefox\/(\d+)/)?.[1]}`;
-  else if (/Safari\/(\d+)/i.test(ua)) browser = 'Safari';
-
-  return { device, os, browser };
-}
-
-// Format IST timestamp
-function istTime() {
-  return new Date().toLocaleString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: true,
-  });
-}
-
-// Upstash Redis REST helper — uses env vars set on Vercel
-// Falls back to in-memory array if not configured (local dev)
-const _MEM_LOGS = []; // fallback for local dev
-
-async function redisCmd(...args) {
-  const url   = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null; // not configured, use in-memory
-  try {
-    const r = await fetch(`${url}/${args.map(a => encodeURIComponent(a)).join('/')}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    return (await r.json()).result;
-  } catch { return null; }
-}
-
-async function saveLog(entry) {
-  const str = JSON.stringify(entry);
-  const configured = !!(process.env.UPSTASH_REDIS_REST_URL);
-  if (configured) {
-    // Push to Redis list, keep last 500 entries
-    await redisCmd('lpush', 'lallu:logs', str);
-    await redisCmd('ltrim', 'lallu:logs', '0', '499');
-  } else {
-    // In-memory fallback (lost on restart — good enough for local testing)
-    _MEM_LOGS.unshift(entry);
-    if (_MEM_LOGS.length > 500) _MEM_LOGS.pop();
-  }
-}
-
-async function getLogs() {
-  const configured = !!(process.env.UPSTASH_REDIS_REST_URL);
-  if (configured) {
-    const raw = await redisCmd('lrange', 'lallu:logs', '0', '199');
-    if (!raw) return [];
-    return (Array.isArray(raw) ? raw : []).map(s => {
-      try { return JSON.parse(s); } catch { return null; }
-    }).filter(Boolean);
-  }
-  return _MEM_LOGS.slice(0, 200);
-}
-
-// ─── POST /api/track ──────────────────────────────────────────────────────────
-// Frontend calls this on: search, movie click, season/episode click, download
+// Track (analytics)
 app.post('/api/track', async (req, res) => {
   try {
     const ua = req.headers['user-agent'] || '';
-    const { action, data } = req.body || {};
+    const { action, data, uid, clientHints } = req.body || {};
     if (!action) return res.json({ ok: false });
 
     const { device, os, browser } = parseUA(ua);
+
+    // Merge clientHints model if available (Android Chrome sends actual device name)
+    let finalDevice = device;
+    if (clientHints?.model && clientHints.model.length > 0) {
+      finalDevice = clientHints.model;
+    }
+
     const entry = {
-      time: istTime(),
-      ts: Date.now(),
-      device, os, browser,
+      time  : istTime(),
+      ts    : Date.now(),
+      uid   : uid || null,
+      device: finalDevice,
+      os,
+      browser,
+      mobile: clientHints?.mobile ?? /Mobile/i.test(ua),
       action,
-      data: data || {},
+      data  : data || {},
     };
 
     await saveLog(entry);
     res.json({ ok: true });
-  } catch (e) {
+  } catch {
     res.json({ ok: false });
   }
 });
 
-// ─── POST /api/admin ──────────────────────────────────────────────────────────
-// Password checked SERVER-SIDE against env var — never sent to frontend
+// Admin
 app.post('/api/admin', async (req, res) => {
   const { password } = req.body || {};
-  const correct = process.env.ADMIN_PASSWORD || 'lallu2024'; // default for local dev
-  if (password !== correct) {
-    return res.status(401).json({ ok: false, error: 'Wrong password' });
-  }
+  const correct = process.env.ADMIN_PASSWORD || 'lallu2024';
+  if (password !== correct) return res.status(401).json({ ok: false, error: 'Wrong password' });
   try {
-    const logs = await getLogs();
-    res.json({ ok: true, logs });
-  } catch (e) {
+    const logs  = await getLogs(300);
+    // Unique users count (distinct non-null uid values)
+    const uuids = new Set(logs.map(l => l.uid).filter(Boolean));
+    res.json({ ok: true, logs, stats: { uniqueUsers: uuids.size } });
+  } catch {
     res.json({ ok: false, error: 'Failed to fetch logs' });
   }
 });
 
-app.get('/api/health', (_, res) => res.json({ ok: true }));
+// Health
+app.get('/api/health', (_, res) => res.json({ ok: true, ts: Date.now() }));
+
+// SPA catch-all
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Server → http://localhost:${PORT}`));
+  app.listen(PORT, () => console.log(`Lallu server → http://localhost:${PORT}`));
 }
 module.exports = app;
-
