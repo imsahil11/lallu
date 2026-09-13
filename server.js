@@ -256,7 +256,7 @@ async function getLogs(limit = 200) {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-// Search
+// Search — scrape rendered HTML cards exactly as Potterflix shows them
 app.get('/api/search', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.json({ error: 'Query required' });
@@ -265,26 +265,63 @@ app.get('/api/search', async (req, res) => {
   if (hit) return res.json(hit);
   try {
     const html = await srcFetch(`${SRC}/search?q=${encodeURIComponent(q)}`).then(r => r.text());
-    const data = extractNextData(html);
-    const results = [], seen = new Set();
-    const re = /"title":"([^"]+)","posterPath":(\"([^"]*?)\"|null),"rating":([\d.]+),"year":"(\d+)","mediaType":"([^"]+)"/g;
-    let m;
-    while ((m = re.exec(data)) !== null) {
-      const key = `${m[1]}-${m[5]}`;
+
+    const results = [];
+    const seen    = new Set();
+
+    // Parse each <a class="group block" href="..."> card directly from rendered HTML
+    // This is 1:1 with what Potterflix shows — no JSON parsing needed
+    // Rating span is optional (0-rating movies like custom DB entries don't have it)
+    const cardRe = /<a\s+class="group block"\s+href="([^"]+)"[\s\S]{0,3000}?<img[^>]+src="([^"]+)"[\s\S]{0,800}?(?:<span[^>]*>([\d.]+)<\/span>[\s\S]{0,500}?)?<h3[^>]*>([^<]+)<\/h3>[\s\S]{0,300}?<p[^>]*>(\d{4})<\/p>/g;
+    let c;
+    while ((c = cardRe.exec(html)) !== null) {
+      const href   = c[1];                            // /Freddy%202022/all (keep encoded)
+      const src    = c[2];                            // TMDB poster URL
+      const rating = c[3] || '0';                    // optional — 0 for custom DB entries
+      const title  = c[4].trim();                    // Freddy
+      const year   = c[5];                           // 2022
+
+      // Use poster URL as unique key — same title+year but diff poster = diff entry
+      const key = src.includes('placeholder') ? `${title}-${year}-noposter` : src;
       if (seen.has(key)) continue;
       seen.add(key);
-      const isTV = m[6] === 'tv';
+
+      const poster = src && !src.includes('placeholder') ? src : null;
+      const decoded = decodeURIComponent(href);
+      const isTV   = !decoded.includes(year);        // TV hrefs don't have year
+
       results.push({
-        title    : m[1],
-        poster   : m[3] ? `https://image.tmdb.org/t/p/w342${m[3]}` : null,  // w342 = smaller, faster
-        rating   : parseFloat(m[4]).toFixed(1),
-        year     : m[5],
-        mediaType: m[6],
-        _href    : isTV
-          ? `/${encodeURIComponent(m[1])}`
-          : `/${encodeURIComponent(`${m[1]} ${m[5]}`)}/all`,
+        title,
+        poster,
+        rating  : parseFloat(rating).toFixed(1),
+        year,
+        mediaType: isTV ? 'tv' : 'movie',
+        _href   : href,                              // keep encoded for Potterflix compat
       });
     }
+
+    // Fallback: if card regex caught nothing (markup change), try JSON
+    if (results.length === 0) {
+      const data = extractNextData(html);
+      const re   = /"title":"([^"]+)","posterPath":("([^"]*?)"|null),"rating":([\d.]+),"year":"(\d+)","mediaType":"([^"]+)"/g;
+      let m;
+      const fSeen = new Set();
+      while ((m = re.exec(data)) !== null) {
+        const key = `${m[1]}-${m[5]}-${m[4]}`;
+        if (fSeen.has(key)) continue;
+        fSeen.add(key);
+        const isTV = m[6] === 'tv';
+        results.push({
+          title    : m[1],
+          poster   : m[3] ? `https://image.tmdb.org/t/p/w342${m[3]}` : null,
+          rating   : parseFloat(m[4]).toFixed(1),
+          year     : m[5],
+          mediaType: m[6],
+          _href    : isTV ? `/${encodeURIComponent(m[1])}` : `/${encodeURIComponent(`${m[1]} ${m[5]}`)}/all`,
+        });
+      }
+    }
+
     const payload = { results, query: q };
     cacheSet(cKey, payload);
     res.json(payload);
