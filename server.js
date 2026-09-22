@@ -401,6 +401,90 @@ app.get('/api/links', async (req, res) => {
 // new6.filesdl.top is the actual server — new1 is a load balancer that redirects here
 // cloud direct btn
 // class='button'                → fffast 10Gbps Direct Download
+const http = require('http');
+const https = require('https');
+
+let cachedProxies = [];
+let lastProxyFetch = 0;
+
+// fetch fresh proxy list every 10 mins
+async function getFreshProxies() {
+  try {
+    const r = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=elite');
+    const txt = await r.text();
+    const proxies = txt.split('\n').map(p => p.trim()).filter(Boolean);
+    if (proxies.length > 0) {
+      cachedProxies = proxies;
+      lastProxyFetch = Date.now();
+    }
+  } catch(e) {}
+}
+
+async function fetchFilesdlHtml(dltype, fid) {
+  const targetPath = `/${dltype}/${fid}`;
+  const targetHost = 'new6.filesdl.top';
+  
+  if (!cachedProxies.length || Date.now() - lastProxyFetch > 10 * 60 * 1000) {
+    await getFreshProxies();
+  }
+  
+  // try direct pehle, agar cf ne block nahi kiya toh fastest yahi hoga
+  const directPromise = new Promise(async (resolve, reject) => {
+    try {
+      const r = await fetch(`https://${targetHost}${targetPath}`, {
+        headers: { 'User-Agent': UA, 'Referer': 'https://new6.filesdl.top/' },
+        signal: AbortSignal.timeout(5000)
+      });
+      const html = await r.text();
+      if (/class='button2 download-link'/.test(html) || /class='button'/.test(html)) resolve(html);
+      else reject('CF Blocked Direct');
+    } catch { reject('Direct Error'); }
+  });
+
+  // top 15 proxies se concurrent hit, jo jeetega wo pehle html return karega
+  const raceProxies = cachedProxies.slice(0, 15);
+  cachedProxies = [...cachedProxies.slice(15), ...cachedProxies.slice(0, 15)];
+
+  const proxyPromises = raceProxies.map(proxy => {
+    return new Promise((resolve, reject) => {
+      const [host, port] = proxy.split(':');
+      const proxyReq = http.request({ host, port, method: 'CONNECT', path: `${targetHost}:443`, timeout: 3500 });
+      
+      proxyReq.on('connect', (res, socket) => {
+        if (res.statusCode !== 200) return reject();
+        const req = https.get({
+          host: targetHost, socket, agent: false, path: targetPath,
+          headers: { 'User-Agent': UA, 'Referer': 'https://new6.filesdl.top/' }
+        }, (res2) => {
+          let data = '';
+          res2.on('data', d => data += d);
+          res2.on('end', () => {
+            if (/class='button2 download-link'/.test(data) || /class='button'/.test(data)) resolve(data);
+            else reject('CF Blocked Proxy');
+          });
+        });
+        req.on('error', reject);
+      });
+      proxyReq.on('error', reject);
+      proxyReq.on('timeout', () => { proxyReq.destroy(); reject(); });
+      proxyReq.end();
+    });
+  });
+
+  // vercel ka free tier max 10s chalta hai, isliye 8s max timeout
+  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Race Timeout')), 8000));
+  
+  try {
+    const winnerHtml = await Promise.race([
+      Promise.any([directPromise, ...proxyPromises]),
+      timeoutPromise
+    ]);
+    return winnerHtml;
+  } catch (e) {
+    return null;
+  }
+}
+
 app.get('/api/servers', async (req, res) => {
   const { dltype, fid } = req.query;
   if (!['cloud', 'drive'].includes(dltype) || !fid) return res.status(400).json({ error: 'bad params' });
@@ -410,28 +494,12 @@ app.get('/api/servers', async (req, res) => {
   if (hit) return res.json(hit);
 
   try {
-    const r = await fetch(`https://new6.filesdl.top/${dltype}/${fid}`, {
-      headers: {
-        'User-Agent'     : UA,
-        'Accept'         : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer'        : 'https://new6.filesdl.top/',
-        'Connection'     : 'keep-alive',
-      },
-      signal: AbortSignal.timeout(9_000),
-    });
-    const html = await r.text();
+    const html = await fetchFilesdlHtml(dltype, fid);
     
-    // log so we can see on Vercel what's actually happening
-    const hasCF    = html.includes('Just a moment') || html.includes('__CF$cv$params');
-    const hasCloud = /href='[^']+'\s+class='button2 download-link'/.test(html);
-    const hasFF    = /href='[^']+'\s+class='button'/.test(html);
-    const debugMsg = `[servers] fid=${fid} status=${r.status} size=${html.length} cf=${hasCF} cloud=${hasCloud} ff=${hasFF}`;
-    console.log(debugMsg);
-    saveLog({ time: Date.now(), type: 'debug', q: debugMsg, d: 'Vercel Debug' });
+    if (!html) {
+      return res.json({ cloud: null, fffast: null });
+    }
 
-    // cloud direct btn
-    // skip known sharing/redirect platforms — only take real CDN direct links
     const SKIP_HOSTS = ['pixeldrain', 'gofile', 'hubcloud', 'gdflix', 'telegram', 'mediafire', 'drive.google', 'mega.nz', 'fuckingfast', 'filepress', 'linkbox'];
     const cloudM = html.match(/href='(https:\/\/[^\s']+)'\s+class='button2 download-link'/);
     let cloudUrl = null;
@@ -445,7 +513,6 @@ app.get('/api/servers', async (req, res) => {
       }
     }
 
-    // class='button' → fffast 10Gbps
     const ffM = html.match(/href='(https:\/\/fffast\.filesdl\.in\/[^']+)'\s+class='button'/);
 
     const payload = {
