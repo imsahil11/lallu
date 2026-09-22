@@ -421,6 +421,12 @@ app.get('/api/servers', async (req, res) => {
       signal: AbortSignal.timeout(9_000),
     });
     const html = await r.text();
+    
+    // log so we can see on Vercel what's actually happening
+    const hasCF    = html.includes('Just a moment') || html.includes('__CF$cv$params');
+    const hasCloud = /href='[^']+'\s+class='button2 download-link'/.test(html);
+    const hasFF    = /href='[^']+'\s+class='button'/.test(html);
+    console.log(`[servers] fid=${fid} status=${r.status} size=${html.length} cf=${hasCF} cloud=${hasCloud} ff=${hasFF}`);
 
     // cloud direct btn
     // skip known sharing/redirect platforms — only take real CDN direct links
