@@ -139,6 +139,9 @@ async function doSearch(q) {
 
   try {
     S.results = [];
+    S.ffPage = 1;
+    S.ffTotalPages = 1;
+    hideEl('loadMoreWrap');
     let pending = 2;
     let anyFound = false;
 
@@ -150,8 +153,13 @@ async function doSearch(q) {
       }
     };
 
-    const processResults = (data) => {
+    const processResults = (data, isFF) => {
       const results = data.results || [];
+      if (isFF) {
+        S.ffTotalPages = data.pages || 1;
+        toggleLoadMoreBtn();
+      }
+
       if (results.length > 0) {
         anyFound = true;
         hideEl('searchEmpty');
@@ -167,17 +175,54 @@ async function doSearch(q) {
     };
 
     fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal })
-      .then(r => r.json()).then(processResults).catch(finalize);
+      .then(r => r.json()).then(d => processResults(d, true)).catch(finalize);
       
     fetch(`/api/pf/search?q=${encodeURIComponent(q)}`, { signal })
-      .then(r => r.json()).then(processResults).catch(finalize);
+      .then(r => r.json()).then(d => processResults(d, false)).catch(finalize);
 
   } catch (err) {
     if (err.name === 'AbortError') return;
     hideEl('searchLoading');
     showEl('searchEmpty');
+    hideEl('loadMoreWrap');
   }
 }
+
+function toggleLoadMoreBtn() {
+  if (S.ffPage < S.ffTotalPages) {
+    showEl('loadMoreWrap');
+    $('loadMoreBtn').textContent = 'Load More';
+    $('loadMoreBtn').disabled = false;
+  } else {
+    hideEl('loadMoreWrap');
+  }
+}
+
+$('loadMoreBtn').addEventListener('click', async () => {
+  if (S.ffPage >= S.ffTotalPages) return;
+  S.ffPage++;
+  const btn = $('loadMoreBtn');
+  btn.textContent = 'Loading...';
+  btn.disabled = true;
+
+  try {
+    const r = await fetch(`/api/search?q=${encodeURIComponent(S.query)}&page=${S.ffPage}`);
+    const data = await r.json();
+    const results = data.results || [];
+    if (results.length > 0) {
+      S.results.push(...results);
+      $('resultsCount').textContent = `${S.results.length} mili 🎉`;
+      const frag = document.createDocumentFragment();
+      results.forEach(m => frag.appendChild(makeCard(m)));
+      $('resultsGrid').appendChild(frag);
+    }
+    toggleLoadMoreBtn();
+  } catch (e) {
+    btn.textContent = 'Failed. Try again';
+    btn.disabled = false;
+    S.ffPage--; // rollback
+  }
+});
 
 // 
 

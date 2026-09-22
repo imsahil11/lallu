@@ -1047,3 +1047,22 @@ img { display: block; max-width: 100%; }
     transition-duration: 0.01ms !important;
   }
 }
+
+.load-more-wrap {
+  text-align: center;
+  padding: 10px 0 30px;
+}
+.load-more-wrap .btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 12px 32px;
+  border-radius: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--t);
+  font-size: 0.9rem;
+}
+.load-more-wrap .btn:hover { background: var(--border); }
+.load-more-wrap .btn:active { border-color: var(--amber-bdr); color: var(--amber); }
+.load-more-wrap .btn:disabled { opacity: 0.5; cursor: not-allowed; }
