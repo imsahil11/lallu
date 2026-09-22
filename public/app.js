@@ -138,24 +138,40 @@ async function doSearch(q) {
   showEl('searchLoading');
 
   try {
-    // dono se ek sath fetch (ff pehle)
-    const [ff, pf] = await Promise.allSettled([
-      fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal }).then(r => r.json()),
-      fetch(`/api/pf/search?q=${encodeURIComponent(q)}`, { signal }).then(r => r.json()),
-    ]);
+    S.results = [];
+    let pending = 2;
+    let anyFound = false;
 
-    hideEl('searchLoading');
+    const finalize = () => {
+      pending--;
+      if (pending === 0) {
+        hideEl('searchLoading');
+        if (!anyFound) showEl('searchEmpty');
+      }
+    };
 
-    const ffResults = (ff.status === 'fulfilled' ? ff.value.results : []) || [];
-    const pfResults = (pf.status === 'fulfilled' ? pf.value.results : []) || [];
-    const all = [...ffResults, ...pfResults];
+    const processResults = (data) => {
+      const results = data.results || [];
+      if (results.length > 0) {
+        anyFound = true;
+        hideEl('searchEmpty');
+        S.results.push(...results);
+        badge.textContent = `${S.results.length} mili 🎉`;
+        badge.classList.add('show');
+        
+        const frag = document.createDocumentFragment();
+        results.forEach(m => frag.appendChild(makeCard(m)));
+        $('resultsGrid').appendChild(frag);
+      }
+      finalize();
+    };
 
-    if (!all.length) { showEl('searchEmpty'); return; }
+    fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal })
+      .then(r => r.json()).then(processResults).catch(finalize);
+      
+    fetch(`/api/pf/search?q=${encodeURIComponent(q)}`, { signal })
+      .then(r => r.json()).then(processResults).catch(finalize);
 
-    S.results = all;
-    badge.textContent = `${all.length} mili 🎉`;
-    badge.classList.add('show');
-    renderCards(all);
   } catch (err) {
     if (err.name === 'AbortError') return;
     hideEl('searchLoading');

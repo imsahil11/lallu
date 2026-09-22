@@ -528,57 +528,7 @@ app.get('/api/servers', async (req, res) => {
   }
 });
 
-// cloud proxy — streams awssspp9 file with correct Referer so CF doesn't block
-// browser never touches awssspp9.store directly — only our server does
-app.get('/dl/cloud/:fid', async (req, res) => {
-  const { fid } = req.params;
 
-  // get the raw awssspp9 url from cache (set by /api/servers above)
-  let awssUrl = cacheGet(`awss:${fid}`);
-
-  // cache miss — re-fetch filesdl page to get fresh url + token
-  if (!awssUrl) {
-    try {
-      const html = await fetch(`https://new6.filesdl.top/cloud/${fid}`, {
-        headers: { 'User-Agent': UA, Referer: 'https://image.linkmake.in/' },
-        signal: AbortSignal.timeout(8_000),
-      }).then(r => r.text());
-
-      const m = html.match(/href='(https:\/\/[^\s']+awssspp9\.store\/[^']+)'\s+class='button2 download-link'/);
-      if (!m) return res.status(404).send('Cloud link not found for this file');
-      const token = Math.floor(1000000000 + Math.random() * 9000000000);
-      awssUrl = m[1] + '&token=' + token;
-    } catch (e) {
-      console.error('[dl/cloud]', e.message);
-      return res.status(500).send('Failed to get cloud link');
-    }
-  }
-
-  try {
-    // fetch from awssspp9 with filesdl Referer — this is what makes CF allow it
-    const upstream = await fetch(awssUrl, {
-      headers: {
-        'User-Agent': UA,
-        'Referer': 'https://new6.filesdl.top/',
-        'Range': req.headers['range'] || '',
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    // pass through status, content-type, content-length, content-range
-    res.status(upstream.status);
-    ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition'].forEach(h => {
-      const v = upstream.headers.get(h);
-      if (v) res.setHeader(h, v);
-    });
-
-    // pipe the stream — works on local node, Vercel may timeout on large files
-    upstream.body.pipe(res);
-  } catch (e) {
-    console.error('[dl/cloud pipe]', e.message);
-    if (!res.headersSent) res.status(500).send('Stream failed');
-  }
-});
 
 
 // analytics
