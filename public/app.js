@@ -363,12 +363,21 @@ function openFFDownload(link) {
       </div>
     </div>`;
 
-  fetch(`/api/servers?dltype=${encodeURIComponent(link.dltype)}&fid=${encodeURIComponent(link.fid)}`)
-    .then(r => r.json())
-    .then(data => renderFFServerButtons(data, title, qual, size))
-    .catch(() => {
-      $('ffServersWrap').innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">😕</div><p>Server links nahi mile, baad mein try karo</p></div>`;
-    });
+  const fetchServers = (retry = 1) => {
+    fetch(`/api/servers?dltype=${encodeURIComponent(link.dltype)}&fid=${encodeURIComponent(link.fid)}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.cloud && !data.fffast && retry > 0) {
+          return fetchServers(retry - 1);
+        }
+        renderFFServerButtons(data, title, qual, size);
+      })
+      .catch(() => {
+        if (retry > 0) return fetchServers(retry - 1);
+        $('ffServersWrap').innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">⚠️</div><p>Server links nahi mile, baad mein try karo</p></div>`;
+      });
+  };
+  fetchServers(1);
 }
 
 function renderFFServerButtons(data, title, qual, size) {
