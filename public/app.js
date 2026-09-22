@@ -477,10 +477,10 @@ function renderFFServerButtons(data, title, qual, size) {
       <a class="btn-dl" href="${esc(data.cloud)}" target="_blank" rel="noopener noreferrer">☁️ Cloud Download</a>`;
     wrap.appendChild(card2);
     card2.querySelector('#copyCloud').addEventListener('click', () => {
-      navigator.clipboard.writeText(window.location.origin + data.cloud).then(() => toast('📋 Cloud link copy ho gaya!')).catch(() => {});
+      navigator.clipboard.writeText(data.cloud).then(() => toast('📋 Cloud link copy ho gaya!')).catch(() => {});
     }, { passive: true });
     const sc = card2.querySelector('#shareCloud');
-    if (sc) sc.addEventListener('click', () => { navigator.share({ title, url: window.location.origin + data.cloud }).catch(() => {}); }, { passive: true });
+    if (sc) sc.addEventListener('click', () => { navigator.share({ title, url: data.cloud }).catch(() => {}); }, { passive: true });
   }
 }
 
