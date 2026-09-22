@@ -410,9 +410,15 @@ app.get('/api/servers', async (req, res) => {
   if (hit) return res.json(hit);
 
   try {
-    const r    = await fetch(`https://new6.filesdl.top/${dltype}/${fid}`, {
-      headers: { 'User-Agent': UA, Referer: 'https://image.linkmake.in/' },
-      signal: AbortSignal.timeout(10_000),
+    const r = await fetch(`https://new6.filesdl.top/${dltype}/${fid}`, {
+      headers: {
+        'User-Agent'     : UA,
+        'Accept'         : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer'        : 'https://new6.filesdl.top/',
+        'Connection'     : 'keep-alive',
+      },
+      signal: AbortSignal.timeout(9_000),
     });
     const html = await r.text();
 
