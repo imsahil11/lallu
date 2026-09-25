@@ -200,31 +200,41 @@ function toggleLoadMoreBtn() {
   }
 }
 
-$('loadMoreBtn').addEventListener('click', async () => {
-  if (S.ffPage >= S.ffTotalPages) return;
-  S.ffPage++;
-  const btn = $('loadMoreBtn');
-  btn.textContent = 'Loading...';
-  btn.disabled = true;
+function initLoadMore() {
+  $('loadMoreBtn').addEventListener('click', async () => {
+    if (S.ffPage >= S.ffTotalPages) return;
 
-  try {
-    const r = await fetch(`/api/search?q=${encodeURIComponent(S.query)}&page=${S.ffPage}`);
-    const data = await r.json();
-    const results = data.results || [];
-    if (results.length > 0) {
-      S.results.push(...results);
-      $('resultsCount').textContent = `${S.results.length} mili 🎉`;
-      const frag = document.createDocumentFragment();
-      results.forEach(m => frag.appendChild(makeCard(m)));
-      $('resultsGrid').appendChild(frag);
+    // capture query at the moment of click — guards against mid-flight new searches
+    const queryAtClick = S.query;
+    S.ffPage++;
+    const btn = $('loadMoreBtn');
+    btn.textContent = 'Loading...';
+    btn.disabled = true;
+
+    try {
+      const r = await fetch(`/api/search?q=${encodeURIComponent(queryAtClick)}&page=${S.ffPage}`);
+      const data = await r.json();
+
+      // discard if user started a new search while this was loading
+      if (S.query !== queryAtClick) return;
+
+      const results = data.results || [];
+      if (results.length > 0) {
+        S.results.push(...results);
+        $('resultsCount').textContent = `${S.results.length} mili 🎉`;
+        const frag = document.createDocumentFragment();
+        results.forEach(m => frag.appendChild(makeCard(m)));
+        $('resultsGrid').appendChild(frag);
+      }
+      toggleLoadMoreBtn();
+    } catch (e) {
+      if (S.query !== queryAtClick) return; // new search fired, ignore silently
+      btn.textContent = 'Failed. Try again';
+      btn.disabled = false;
+      S.ffPage--;
     }
-    toggleLoadMoreBtn();
-  } catch (e) {
-    btn.textContent = 'Failed. Try again';
-    btn.disabled = false;
-    S.ffPage--; // rollback
-  }
-});
+  });
+}
 
 // 
 
@@ -901,6 +911,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   si.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(si.value); });
   sb.addEventListener('click', () => doSearch(si.value), { passive: true });
+  initLoadMore();
 
   document.querySelectorAll('.chip').forEach(c => {
     c.addEventListener('click', () => { si.value = c.dataset.query; doSearch(c.dataset.query); }, { passive: true });
