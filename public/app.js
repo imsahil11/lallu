@@ -89,16 +89,18 @@ function dlUrl(token) {
 
 // app state
 const S = {
-  query:      '',
-  results:    [],
-  movie:      null,   // { source: 'filmyfly'|'potterflix', ... }
+  query:       '',
+  results:     [],
+  movie:       null,   // { source: 'filmyfly'|'potterflix', ... }
   // filmyfly specific
-  parts:      [],
-  activePart: null,
-  activeLink: null,
+  parts:       [],
+  activePart:  null,
+  activeLink:  null,
+  ffPage:      1,
+  ffTotalPages: 1,
   // potterflix specific
-  pfFiles:    [],
-  pfSeason:   null,
+  pfFiles:     [],
+  pfSeason:    null,
 };
 
 const SCREENS       = ['hero', 'results', 'files', 'download'];
@@ -226,13 +228,7 @@ $('loadMoreBtn').addEventListener('click', async () => {
 
 // 
 
-function renderCards(list) {
-  const grid = $('resultsGrid');
-  grid.innerHTML = '';
-  const frag = document.createDocumentFragment();
-  list.forEach(m => frag.appendChild(makeCard(m)));
-  grid.appendChild(frag);
-}
+
 
 function makeCard(m) {
   const isPF     = m.source === 'potterflix';
@@ -708,6 +704,9 @@ function generatePFLink(file, name) {
 }
 
 function startPFCountdown(file, el, name) {
+  // cancel any existing countdown on this element before starting fresh
+  if (el._stop) { el._stop(); el._stop = null; }
+
   const end = Date.now() + 6 * 3600 * 1000;
   let rafId;
 
@@ -802,6 +801,8 @@ function handleBackToFiles() {
 
 // 
 
+let _adminPass = '';
+
 function openAdmin() { showEl('adminOverlay', 'flex'); $('adminPassInput').focus(); }
 function closeAdmin() {
   hideEl('adminOverlay');
@@ -810,6 +811,7 @@ function closeAdmin() {
   $('adminPassInput').value = '';
   $('adminPassErr').textContent = '';
   if($('adminClearBtn')) $('adminClearBtn').style.display = 'none';
+  _adminPass = '';
 }
 
 async function submitAdminPass() {
@@ -827,6 +829,7 @@ async function submitAdminPass() {
       $('adminPassInput').value = '';
       $('adminPassInput').focus();
     } else {
+      _adminPass = pass;
       hideEl('adminAuth');
       showEl('adminLogs', 'flex');
       if($('adminClearBtn')) $('adminClearBtn').style.display = 'block';
@@ -838,16 +841,15 @@ async function submitAdminPass() {
 
 
 async function clearAdminLogs() {
-  const pass = $('adminPassInput').value;
-  if (!pass || !confirm('Sach me saare logs delete karne hain?')) return;
+  if (!_adminPass || !confirm('Sach me saare logs delete karne hain?')) return;
   const btn = $('adminClearBtn');
   btn.textContent = 'Clearing...';
   try {
-    const res = await fetch('/api/admin/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pass }) });
+    const res = await fetch('/api/admin/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: _adminPass }) });
     const data = await res.json();
     if (data.ok) await submitAdminPass(); // refresh
   } catch {}
-  btn.textContent = '??? Clear';
+  btn.textContent = '🗑️ Clear';
 }
 
 const ACTION_LABEL = { search: '🔍 Search', movie_click: '🎬 Clicked', part_click: '📁 Part', download_click: '⬇️ Download' };

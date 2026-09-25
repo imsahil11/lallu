@@ -2,6 +2,8 @@ const express = require('express');
 const fetch   = require('node-fetch');
 const cors    = require('cors');
 const path    = require('path');
+const http    = require('http');
+const https   = require('https');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -10,8 +12,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const UA    = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const PF    = 'https://potterflixmovies.vercel.app';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const PF = (process.env.POTTERFLIX_URL || 'https://potterflixmovies.vercel.app').replace(/\/$/, '');
 
 // potterflix — extract RSC streamed json chunks from rendered page
 function extractNextData(html) {
@@ -399,10 +401,7 @@ app.get('/api/links', async (req, res) => {
 
 // servers — returns download options from filesdl page as JSON
 // new6.filesdl.top is the actual server — new1 is a load balancer that redirects here
-// cloud direct btn
-// class='button'                → fffast 10Gbps Direct Download
-const http = require('http');
-const https = require('https');
+// class='button' → fffast 10Gbps Direct Download
 
 let cachedProxies = [];
 let lastProxyFetch = 0;
@@ -725,6 +724,8 @@ app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html
 
 if (require.main === module) {
   activeDomain();  // warm domain cache on startup
+  // auto-refresh domain every 55 mins so the first user after a domain change never hits an error
+  setInterval(activeDomain, 55 * 60 * 1000);
   app.listen(PORT, () => console.log(`lallu → http://localhost:${PORT}`));
 }
 module.exports = app;
