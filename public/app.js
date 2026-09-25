@@ -700,13 +700,13 @@ function generatePFLink(file, name) {
 
   $('copyBtn').addEventListener('click', () => {
     navigator.clipboard.writeText(url).then(() => toast('📋 Link copy ho gaya!')).catch(() => {});
-  }, { passive: true });
+  }, { passive: true, once: true });
 
   const shareBtn = $('shareBtn');
   if (shareBtn) {
     shareBtn.addEventListener('click', () => {
       navigator.share({ title: name || 'Download Link', text: `🎬 ${name} download karo — 6 ghante valid`, url }).catch(() => {});
-    }, { passive: true });
+    }, { passive: true, once: true });
   }
 
   $('dlActions').classList.add('show');

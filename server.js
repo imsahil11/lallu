@@ -8,7 +8,7 @@ const https   = require('https');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -21,7 +21,7 @@ function extractNextData(html) {
   const re = /self\.__next_f\.push\(\[1,"(.+?)"\]\)/gs;
   let m;
   while ((m = re.exec(html)) !== null) {
-    try { parts.push(JSON.parse(`"${m[1]}"`)); } catch (_) {}
+    try { parts.push(JSON.parse(`"${m[1]}"`)); } catch (e) { console.warn('[pf] rsc chunk parse fail:', e.message?.slice(0, 60)); }
   }
   return parts.join('');
 }
@@ -121,8 +121,7 @@ function ffSlug(title) {
 // parse the linkmake page html into parts + quality links
 // separator in raw html looks like: &lt;&lt;&lt;&lt;~~ {Part-01 (Ep.01-05)}~~&gt;&gt;&gt;&gt;
 function parseLinkmakePage(html) {
-  const sepRe  = /(?:&lt;){2,4}~*\s*\{([^}]+)\}~*(?:&gt;){2,4}/g;
-  const linkRe = /href='(https:\/\/new\d+\.filesdl\.[^']+)'[^>]*>\s*<div class="dll">\s*([^<]+)/g;
+  const sepRe = /(?:&lt;){2,4}~*\s*\{([^}]+)\}~*(?:&gt;){2,4}/g;
 
   const seps = [];
   let m;
@@ -132,7 +131,6 @@ function parseLinkmakePage(html) {
 
   function extractLinks(chunk) {
     const links = [];
-    linkRe.lastIndex = 0;
     const re = /href="(https:\/\/new\d+\.filesdl\.[^"]+)"[^>]*>\s*<div class="dll">\s*([^<]+)/g;
     let lm;
     while ((lm = re.exec(chunk)) !== null) {
@@ -416,7 +414,7 @@ async function getFreshProxies() {
       cachedProxies = proxies;
       lastProxyFetch = Date.now();
     }
-  } catch(e) {}
+  } catch(e) { console.error('[proxies] fetch failed:', e.message); }
 }
 
 async function fetchFilesdlHtml(dltype, fid) {
