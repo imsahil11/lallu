@@ -48,7 +48,11 @@
   margin: 0; padding: 0; box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
 }
-html { scroll-behavior: auto; }      /* instant — app.js controls scrolling per-screen */
+html {
+  scroll-behavior: auto;      /* instant — app.js controls scrolling per-screen */
+  overflow-x: hidden;         /* iOS Safari ke liye — body alone kafi nahi */
+  max-width: 100%;
+}
 body {
   font-family: var(--font);
   background: var(--bg);
@@ -56,6 +60,7 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: hidden;
+  max-width: 100%;
   -webkit-font-smoothing: antialiased;
   line-height: 1.5;
 }
@@ -221,7 +226,7 @@ img { display: block; max-width: 100%; }
   border: none;
   outline: none;
   color: var(--text);
-  font-size: 16px;     /* 16px minimum — mobile browsers auto-zoom when < 16px on focus */
+  font-size: 0.95rem;
   font-family: var(--font);
   padding: 9px 0;
   caret-color: var(--amber);
