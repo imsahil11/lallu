@@ -988,7 +988,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('adminOverlay')?.addEventListener('click', e => { if (e.target === $('adminOverlay')) closeAdmin(); }, { passive: true });
 
   show('hero');
-  si.focus();
+  // Mobile pe keyboard auto-open nahi — sirf desktop pe focus
+  if (!('ontouchstart' in window)) si.focus();
   loadLatestChips();
 });
 
