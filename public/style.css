@@ -37,7 +37,7 @@
   --r-lg:    14px;
 
   /* Typography — system stack, loads instantly */
-  --font: -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font: -apple-system, 'Roboto', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 
   /* Transitions — subtle only */
   --t: 0.18s ease;
@@ -51,7 +51,6 @@
 html {
   scroll-behavior: auto;      /* instant — app.js controls scrolling per-screen */
   overflow-x: hidden;         /* iOS Safari ke liye — body alone kafi nahi */
-  max-width: 100%;
 }
 body {
   font-family: var(--font);
@@ -60,7 +59,6 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: hidden;
-  max-width: 100%;
   -webkit-font-smoothing: antialiased;
   line-height: 1.5;
 }
