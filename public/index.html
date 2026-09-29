@@ -53,13 +53,15 @@
           </div>
         </div>
 
-        <div class="chips" role="list" aria-label="Quick searches">
-          <span class="chips-label">Try karo →</span>
-          <button class="chip" data-query="Pushpa 2" role="listitem">🌿 Pushpa 2</button>
-          <button class="chip" data-query="Stree 2" role="listitem">👻 Stree 2</button>
-          <button class="chip" data-query="Animal" role="listitem">🐯 Animal</button>
-          <button class="chip" data-query="Avengers" role="listitem">⚡ Avengers</button>
-          <button class="chip" data-query="Jawan" role="listitem">🔥 Jawan</button>
+        <div class="chips-outer">
+          <span class="chips-label">Trending 🔥</span>
+          <div class="chips" id="trendingChips" role="list" aria-label="Trending searches">
+            <button class="chip" data-query="Newtons 3rd Law" role="listitem">Newtons 3rd Law</button>
+            <button class="chip" data-query="Geralds Game" role="listitem">Geralds Game</button>
+            <button class="chip" data-query="The Love Hypothesis" role="listitem">The Love Hypothesis</button>
+            <button class="chip" data-query="Hanuman Ansh" role="listitem">Hanuman Ansh</button>
+          </div>
+          <span class="chips-scroll-hint" id="chipsScrollHint">↓ aur bhi hain</span>
         </div>
       </div>
     </section>
@@ -130,7 +132,7 @@
       <div class="admin-header">
         <div style="display:flex; align-items:center; gap:12px;">
         <span class="admin-title">🔐 Admin</span>
-          <button id="adminClearBtn" class="btn-copy" style="display:none; padding: 3px 8px; font-size:0.7rem; border-color:var(--red); color:var(--red); background:transparent;">??? Clear</button>
+          <button id="adminClearBtn" class="btn-copy" style="display:none; padding: 3px 8px; font-size:0.7rem; border-color:var(--red); color:var(--red); background:transparent;">Clear logs</button>
         </div>
         <button class="admin-close" id="adminClose" aria-label="Close">✕</button>
       </div>

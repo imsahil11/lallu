@@ -120,6 +120,8 @@ function show(name) {
 // 
 
 let _searchCtrl = null;
+// chips hint ref — module-level so loadLatestChips (outside DOMContentLoaded) can call it
+let updateChipsHint = () => {};
 
 async function doSearch(q) {
   q = (q || '').trim();
@@ -135,9 +137,24 @@ async function doSearch(q) {
   const badge = $('resultsCount');
   badge.textContent = '';
   badge.classList.remove('show');
-  $('resultsGrid').innerHTML = '';
+
+  const grid = $('resultsGrid');
+  grid.innerHTML = '';
   hideEl('searchEmpty');
-  showEl('searchLoading');
+  hideEl('searchLoading'); // spinner hata do — skeleton le lega jagah
+
+  // 6 shimmer skeleton cards turant inject karo
+  for (let i = 0; i < 6; i++) {
+    const sk = document.createElement('div');
+    sk.className = 'card card-skeleton';
+    sk.innerHTML = `
+      <div class="skel-poster"></div>
+      <div class="skel-info">
+        <div class="skel-line skel-title"></div>
+        <div class="skel-line skel-year"></div>
+      </div>`;
+    grid.appendChild(sk);
+  }
 
   try {
     S.results = [];
@@ -150,7 +167,11 @@ async function doSearch(q) {
     const finalize = () => {
       pending--;
       if (pending === 0) {
-        hideEl('searchLoading');
+        // bache skeleton cards ko smoothly hata do
+        grid.querySelectorAll('.card-skeleton').forEach(el => {
+          el.classList.add('skel-removing');
+          el.addEventListener('animationend', () => el.remove(), { once: true });
+        });
         if (!anyFound) showEl('searchEmpty');
       }
     };
@@ -168,27 +189,37 @@ async function doSearch(q) {
         S.results.push(...results);
         badge.textContent = `${S.results.length} mili 🎉`;
         badge.classList.add('show');
-        
-        const frag = document.createDocumentFragment();
-        results.forEach(m => frag.appendChild(makeCard(m)));
-        $('resultsGrid').appendChild(frag);
+
+        const skels = grid.querySelectorAll('.card-skeleton');
+        const frag  = document.createDocumentFragment();
+        results.forEach((m, i) => {
+          const card = makeCard(m);
+          if (skels[i]) {
+            grid.replaceChild(card, skels[i]); // skeleton → real card
+          } else {
+            frag.appendChild(card);
+          }
+        });
+        if (frag.childNodes.length) grid.appendChild(frag);
       }
       finalize();
     };
 
     fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal })
       .then(r => r.json()).then(d => processResults(d, true)).catch(finalize);
-      
+
     fetch(`/api/pf/search?q=${encodeURIComponent(q)}`, { signal })
       .then(r => r.json()).then(d => processResults(d, false)).catch(finalize);
 
   } catch (err) {
     if (err.name === 'AbortError') return;
+    grid.querySelectorAll('.card-skeleton').forEach(el => el.remove());
     hideEl('searchLoading');
     showEl('searchEmpty');
     hideEl('loadMoreWrap');
   }
 }
+
 
 function toggleLoadMoreBtn() {
   if (S.ffPage < S.ffTotalPages) {
@@ -913,9 +944,29 @@ document.addEventListener('DOMContentLoaded', () => {
   sb.addEventListener('click', () => doSearch(si.value), { passive: true });
   initLoadMore();
 
-  document.querySelectorAll('.chip').forEach(c => {
-    c.addEventListener('click', () => { si.value = c.dataset.query; doSearch(c.dataset.query); }, { passive: true });
-  });
+  // Chips scroll hint — sirf tab dikhao jab overflow ho
+  const chipsEl = $('trendingChips');
+  const hintEl  = document.getElementById('chipsScrollHint');
+  updateChipsHint = function() {
+    if (!chipsEl || !hintEl) return;
+    const hasOverflow = chipsEl.scrollHeight > chipsEl.clientHeight + 4;
+    const atBottom    = chipsEl.scrollHeight - chipsEl.scrollTop <= chipsEl.clientHeight + 4;
+    hintEl.classList.toggle('hidden', !hasOverflow || atBottom);
+  };
+  if (chipsEl) {
+    chipsEl.addEventListener('scroll', updateChipsHint, { passive: true });
+    // loadLatestChips ke baad bhi re-check karo
+    setTimeout(updateChipsHint, 1200);
+  }
+
+  // Event delegation — hardcoded + dynamic chips dono handle karta hai
+  $('trendingChips')?.addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    const q = chip.dataset.query || chip.textContent.trim();
+    si.value = q;
+    doSearch(q);
+  }, { passive: true });
 
   $('navLogo')?.addEventListener('click', () => { show('hero'); setTimeout(() => si.focus(), 60); }, { passive: true });
   $('navHomeBtn')?.addEventListener('click', () => { show('hero'); setTimeout(() => si.focus(), 60); }, { passive: true });
@@ -938,4 +989,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
   show('hero');
   si.focus();
+  loadLatestChips();
 });
+
+// ── Latest chips for trending section ────────────────
+function loadLatestChips() {
+  fetch('/api/latest')
+    .then(r => r.json())
+    .then(data => {
+      const items = data.items || [];
+      if (!items.length) return;
+      const wrap = $('trendingChips');
+      if (!wrap) return;
+      const frag = document.createDocumentFragment();
+      items.forEach(item => {
+        const btn = document.createElement('button');
+        btn.className = 'chip';
+        btn.textContent = item.title;
+        frag.appendChild(btn);
+      });
+      wrap.appendChild(frag);
+      updateChipsHint();
+    })
+    .catch(() => {});
+}
+

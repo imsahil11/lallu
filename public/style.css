@@ -243,20 +243,39 @@ img { display: block; max-width: 100%; }
 .search-btn:active { background: var(--amber-d); }
 
 /* Chips */
+.chips-outer {
+  position: relative;
+  margin-bottom: 28px;
+}
+.chips-label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-3);
+  font-weight: 500;
+  margin-bottom: 8px;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  margin-bottom: 36px;
+  max-height: 78px;  /* 2 rows + chhota peek */
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
-.chips-label {
-  font-size: 0.78rem;
-  color: var(--text-3);
-  font-weight: 500;
-  flex-basis: 100%;
+.chips::-webkit-scrollbar { display: none; }
+.chips-scroll-hint {
+  display: block;
+  margin-top: 7px;
+  font-size: 0.72rem;
+  color: var(--amber);
+  opacity: 0.7;
+  transition: opacity 0.3s ease;
+  user-select: none;
 }
+.chips-scroll-hint.hidden { opacity: 0; pointer-events: none; }
 .chip {
   padding: 5px 13px;
   background: var(--surface);
@@ -272,10 +291,7 @@ img { display: block; max-width: 100%; }
   color: var(--amber);
   background: var(--amber-bg);
 }
-.hero-note {
-  font-size: 0.75rem;
-  color: var(--text-3);
-}
+
 
 /* ── Page Header (shared) ──────────────────────────── */
 .page-head {
@@ -1008,7 +1024,40 @@ img { display: block; max-width: 100%; }
   font-size: 0.82rem;
 }
 
+
+/* ── Skeleton Cards ─────────────────────────────────── */
+.card-skeleton { pointer-events: none; cursor: default; }
+.skel-poster {
+  aspect-ratio: 2/3;
+  width: 100%;
+  background: var(--raised);
+  position: relative;
+  overflow: hidden;
+}
+.skel-info { padding: 8px 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.skel-line { border-radius: 4px; background: var(--raised); position: relative; overflow: hidden; }
+.skel-title { height: 11px; width: 80%; }
+.skel-year  { height: 9px;  width: 45%; }
+.skel-poster::after,
+.skel-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.045) 40%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.045) 60%, transparent 100%);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@keyframes skelOut {
+  0%   { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.88); }
+}
+.skel-removing { animation: skelOut 0.2s ease forwards; pointer-events: none; }
+
 /* ── Responsive — Tablet/Desktop ───────────────────── */
+
 @media (min-width: 480px) {
   .results-grid {
     grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
@@ -1026,8 +1075,9 @@ img { display: block; max-width: 100%; }
   .hero-eyebrow { font-size: 0.82rem; }
   .hero-sub { font-size: 0.98rem; }
   .results-grid { grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); }
-  .chips-label { flex-basis: auto; }
 }
+
+
 
 /* Safe area for devices with notch/home indicator + mobile overrides */
 @media (max-width: 560px) {

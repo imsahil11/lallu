@@ -716,7 +716,35 @@ app.get('/api/pf/episodes', async (req, res) => {
   }
 });
 
+// latest movies — trending chips ke liye
+function cleanTitle(t) {
+  return (t || '').replace(/\s*\(?\d{4}\)?.*$/i, '').trim();
+}
+app.get('/api/latest', async (req, res) => {
+  const cKey = 'latest:ff';
+  const hit  = cacheGet(cKey);
+  if (hit) return res.json(hit);
+  try {
+    const r = await fetch(
+      'https://webfind.filmyflydla.space/latest',
+      { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(6_000) }
+    );
+    const data = await r.json();
+    const items = (data.results || []).slice(0, 8).map(item => ({
+      title: cleanTitle(item.title),
+      id:    String(item.filmyfly),
+    }));
+    const payload = { items };
+    cacheSet(cKey, payload, 15 * 60_000);
+    res.json(payload);
+  } catch (e) {
+    res.json({ items: [] });
+  }
+});
+
+
 app.get('/api/health', (_, res) => res.json({ ok: true, ts: Date.now() }));
+
 
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
