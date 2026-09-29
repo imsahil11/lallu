@@ -49,13 +49,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 html {
-  scroll-behavior: auto;      /* instant — app.js controls scrolling per-screen */
-  overflow-x: hidden;         /* iOS Safari ke liye — body alone kafi nahi */
+  scroll-behavior: auto;  /* instant — app.js controls scrolling per-screen */
 }
 body {
   font-family: var(--font);
   background: var(--bg);
   color: var(--text);
+  width: 100%;             /* old browsers pe explicit width — centering ke liye */
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: hidden;

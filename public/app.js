@@ -873,7 +873,6 @@ async function submitAdminPass() {
       _adminPass = pass;
       hideEl('adminAuth');
       showEl('adminLogs', 'flex');
-      if($('adminClearBtn')) $('adminClearBtn').style.display = 'block';
       renderAdminLogs(data.logs || [], data.stats || {});
     }
   } catch { $('adminPassErr').textContent = '❌ Server error, try again'; }
@@ -888,7 +887,7 @@ async function clearAdminLogs() {
   try {
     const res = await fetch('/api/admin/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: _adminPass }) });
     const data = await res.json();
-    if (data.ok) await submitAdminPass(); // refresh
+    if (data.ok) await submitAdminPass(); // refresh — renderAdminLogs button chhupa dega
   } catch {}
   btn.textContent = '🗑️ Clear';
 }
@@ -898,6 +897,11 @@ const ACTION_LABEL = { search: '🔍 Search', movie_click: '🎬 Clicked', part_
 function renderAdminLogs(logs, stats) {
   const statsEl = $('adminStats');
   const listEl  = $('adminLogList');
+  const clearBtn = $('adminClearBtn');
+
+  // Clear button: sirf tab dikhao jab logs hon
+  if (clearBtn) clearBtn.style.display = logs.length ? 'block' : 'none';
+
   const searches  = logs.filter(l => l.action === 'search').length;
   const downloads = logs.filter(l => l.action === 'download_click').length;
   const uids      = new Set(logs.map(l => l.uid).filter(Boolean)).size;
@@ -931,6 +935,7 @@ function renderAdminLogs(logs, stats) {
   listEl.innerHTML = '';
   listEl.appendChild(frag);
 }
+
 
 // 
 
