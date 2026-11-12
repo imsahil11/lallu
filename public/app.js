@@ -114,6 +114,9 @@ function show(name) {
   });
   const homeBtn = $('navHomeBtn');
   if (homeBtn) homeBtn.style.display = name === 'hero' ? 'none' : 'flex';
+  // admin gear only on the homepage — it just overlaps content everywhere else
+  const fab = $('adminFab');
+  if (fab) fab.style.display = name === 'hero' ? 'flex' : 'none';
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
@@ -325,18 +328,27 @@ async function loadFFMovie(m) {
   setMovieHead(m);
   setFilesLoading('Links dhoondh rahe hain... 🔍');
 
+  // one request for movie page + links (was two sequential ones). 20s cap, one automatic retry on
+  // network/5xx errors; a 404 means the title genuinely has no links, so that is not retried.
+  const retry = () => loadFFMovie(m);
   try {
-    const mv = await fetch(`/api/movie?id=${encodeURIComponent(m.id)}&slug=${encodeURIComponent(m.slug)}`).then(r => r.json());
-    if (mv.error || !mv.linkmakeId) {
-      $('filesList').innerHTML = emptyHTML('Link nahi mila', 'Ye title abhi available nahi hai');
-      hideFilesLoading(); return;
+    let r = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { r = await getJSON(`/api/movie-links?id=${encodeURIComponent(m.id)}`, 20000); } catch { r = null; }
+      if (r && (r.ok || r.status === 404 || r.status === 400)) break;
     }
-    if (mv.poster && !m.poster) { S.movie = { ...m, poster: mv.poster }; setMovieHead(S.movie); }
-    $('filesLoadingMsg').textContent = 'Quality options aa rahe hain... 📦';
-
-    const lk = await fetch(`/api/links?lmId=${encodeURIComponent(mv.linkmakeId)}`).then(r => r.json());
     hideFilesLoading();
-    if (lk.error || !lk.parts?.length) {
+    if (!r) { showRetry($('filesList'), 'Connection slow hai', 'Internet check karo ya dobara try karo', retry); return; }
+    if (r.status === 404 || r.status === 400) {
+      $('filesList').innerHTML = emptyHTML('Link nahi mila', 'Ye title abhi available nahi hai');
+      return;
+    }
+    if (!r.ok || !r.data?.links) { showRetry($('filesList'), 'Links abhi load nahi hue', 'Server busy hai, dobara try karo', retry); return; }
+
+    const mv = r.data.movie || {};
+    const lk = r.data.links;
+    if (mv.poster && !m.poster) { S.movie = { ...m, poster: mv.poster }; setMovieHead(S.movie); }
+    if (!lk.parts?.length) {
       $('filesList').innerHTML = emptyHTML('Download links nahi mile', 'Baad mein try karo');
       return;
     }
@@ -344,7 +356,7 @@ async function loadFFMovie(m) {
     S.parts.length === 1 ? renderQualities(S.parts[0].links) : renderParts(S.parts);
   } catch {
     hideFilesLoading();
-    $('filesList').innerHTML = emptyHTML('Kuch gadbad ho gayi', 'Dobara try karo');
+    showRetry($('filesList'), 'Kuch gadbad ho gayi', '', retry);
   }
 }
 
@@ -375,17 +387,24 @@ function renderQualitiesWithBack(links, partLabel) {
       <div class="tv-head-title">${esc(partLabel)}</div>
     </div>`;
   $('backToParts').addEventListener('click', () => { S.activePart = null; renderParts(S.parts); }, { passive: true });
-  const frag = document.createDocumentFragment();
-  links.forEach(link => frag.appendChild(makeQualityCard(link)));
-  list.appendChild(frag);
+  appendQualityCards(list, links);
 }
 
 function renderQualities(links) {
   const list = $('filesList');
   list.innerHTML = '';
+  appendQualityCards(list, links);
+}
+
+// every quality is listed. cloud ones get fast/cloud buttons; "drive" ones open the FilesDL page
+// in the user's own browser (see renderFFServerButtons, reason "external").
+function appendQualityCards(list, links) {
   const frag = document.createDocumentFragment();
-  links.forEach(link => frag.appendChild(makeQualityCard(link)));
+  // direct (cloud) qualities first, drive (external page) after; original order kept inside each group
+  const ordered = [...links.filter(l => l.dltype !== 'drive'), ...links.filter(l => l.dltype === 'drive')];
+  ordered.forEach(link => frag.appendChild(makeQualityCard(link)));
   list.appendChild(frag);
+  prefetchServers(ordered);   // warm up the first two direct qualities while the user is still choosing
 }
 
 // filmyfly cards (filename nahi hota isliye quality dikhao)
@@ -398,10 +417,10 @@ function makeQualityCard(link) {
   card.innerHTML = `
     <div class="file-ico">🎞️</div>
     <div class="file-meta">
-      <div class="file-name">${esc(qual)} · ${esc(size)}</div>
+      <div class="file-name">${esc(qual)}</div>
       <div class="file-tags">
-        <span class="tag tag-q">🏆 ${esc(qual)}</span>
         <span class="tag tag-s">💾 ${esc(size)}</span>
+        ${link.dltype === 'drive' ? '<span class="tag tag-ext">🔗 Alag page · ads aa sakte hain</span>' : ''}
       </div>
     </div>
     <div class="file-arrow">›</div>`;
@@ -421,22 +440,23 @@ function openFFDownload(link) {
   const qual  = link.quality || 'HD';
   const size  = link.size   || '—';
   const title = S.movie?.title || '';
+  // series: say which part this download belongs to (single-part movies have no label)
+  const partLabel = (S.parts.length > 1 && S.activePart != null) ? (S.parts[S.activePart]?.label || '') : '';
 
   $('dlCard').innerHTML = `
     <div class="dl-bar"></div>
     <div class="dl-header">
-      <div class="dl-icon">🎬</div>
+      ${S.movie?.poster
+        ? `<img class="dl-poster" src="${esc(S.movie.poster)}" alt="" onerror="this.outerHTML='<div class=&quot;dl-icon&quot;>🎬</div>'">`
+        : '<div class="dl-icon">🎬</div>'}
       <div class="dl-title">${esc(title)}</div>
     </div>
     <div class="dl-meta">
       <div class="dl-meta-item"><span class="dl-meta-emoji">🏆</span><span class="dl-meta-label">Quality</span><span class="dl-meta-val">${esc(qual)}</span></div>
       <div class="dl-meta-item"><span class="dl-meta-emoji">💾</span><span class="dl-meta-label">Size</span><span class="dl-meta-val">${esc(size)}</span></div>
+      ${partLabel ? `<div class="dl-meta-item"><span class="dl-meta-emoji">📁</span><span class="dl-meta-label">Part</span><span class="dl-meta-val">${esc(partLabel)}</span></div>` : ''}
     </div>
     <div class="dl-body">
-      <div class="dl-pill">
-        <span class="dl-pill-ico">⚡</span>
-        <span>Server link fetch ho raha hai — seedha download milega 🚀</span>
-      </div>
       <div id="ffServersWrap">
         <div class="state-wrap" style="display:flex">
           <div class="spinner"></div>
@@ -445,28 +465,76 @@ function openFFDownload(link) {
       </div>
     </div>`;
 
-  const fetchServers = (retry = 1) => {
-    fetch(`/api/servers?dltype=${encodeURIComponent(link.dltype)}&fid=${encodeURIComponent(link.fid)}`)
-      .then(r => r.json())
-      .then(data => {
-        if (!data.cloud && !data.fffast && retry > 0) {
-          return fetchServers(retry - 1);
-        }
-        renderFFServerButtons(data, title, qual, size);
-      })
-      .catch(() => {
-        if (retry > 0) return fetchServers(retry - 1);
-        $('ffServersWrap').innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">⚠️</div><p>Server links nahi mile, baad mein try karo</p></div>`;
-      });
+  // drive type ka JS challenge sirf real browser solve kar sakta hai —
+  // seedha filesdl page link de do (server fetch nahi karta). host link se aata hai (redirect khud sahi
+  // server par le jaata hai), koi new8 hardcode nahi.
+  if (link.dltype === 'drive') {
+    const dhost = /^[a-z0-9.-]+\.filesdl\.[a-z]+$/i.test(link.host || '') ? link.host : 'new1.filesdl.in';
+    const driveUrl = `https://${dhost}/drive/${encodeURIComponent(link.fid)}`;
+    $('ffServersWrap').innerHTML = `
+      <div class="dl-action-card">
+        <div class="dl-action-top">
+          <div class="dl-action-ico">🚗</div>
+          <div class="dl-action-info">
+            <div class="dl-action-title">Drive Download</div>
+            <div class="dl-action-sub">Page khulega → Download button dabao</div>
+          </div>
+          <div class="dl-action-btns">
+            <button class="btn-copy" id="copyDrive">📋 Copy</button>
+          </div>
+        </div>
+        <a class="btn-dl" href="${esc(driveUrl)}" target="_blank" rel="noopener noreferrer">🔗 Drive Page Kholo</a>
+        <p style="font-size:12px;opacity:.7;margin:10px 2px 0;line-height:1.5">
+          Page khulne par pehle chhota verification aa sakta hai, phir download button dabao.
+          Popup / ad khule to use band kar do (kisi ad par "Allow" mat dabana).
+          Ad-blocker ya Brave browser use karoge to popups kam aayenge.
+        </p>
+      </div>`;
+    $('ffServersWrap').querySelector('#copyDrive')
+      ?.addEventListener('click', () => {
+        navigator.clipboard.writeText(driveUrl).then(() => toast('📋 Drive link copy ho gaya!')).catch(() => {});
+      }, { passive: true });
+    return;
+  }
+
+  // Only real failures (network error, timeout, 5xx) are retried automatically, once. A clean answer of
+  // "blocked / not offered / format changed" is final — retrying it just made users wait twice as long.
+  const wrap = $('ffServersWrap');
+  const myLink = link;
+  const fetchServers = async (attempt = 0) => {
+    let r = null;
+    const pre = attempt === 0 ? PREFETCH.get(myLink.fid) : null;
+    if (pre && Date.now() - pre.t < 25_000) r = await pre.p;        // usually already finished
+    if (!r || !r.ok || !r.data) {
+      PREFETCH.delete(myLink.fid);
+      try { r = await getJSON(`/api/servers?dltype=${encodeURIComponent(myLink.dltype)}&fid=${encodeURIComponent(myLink.fid)}`); }
+      catch { r = null; }
+    }
+    if (S.activeLink !== myLink) return;                            // user already went back / picked another one
+    if (r && r.ok && r.data) return renderFFServerButtons(r.data, title, qual, size, () => { PREFETCH.delete(myLink.fid); show1(); });
+    if (attempt < 1) return fetchServers(1);
+    showRetry(wrap, 'Server links nahi mile', 'Connection ya server slow hai', () => { PREFETCH.delete(myLink.fid); show1(); });
   };
-  fetchServers(1);
+  const show1 = () => {
+    wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="spinner"></div><p>Servers dhoondh rahe hain...</p></div>`;
+    const slow = setTimeout(() => { const p = wrap.querySelector('p'); if (p) p.textContent = 'Thoda time lag raha hai, ruko...'; }, 4000);
+    fetchServers(0).finally(() => clearTimeout(slow));
+  };
+  fetchServers(0);
 }
 
-function renderFFServerButtons(data, title, qual, size) {
+function renderFFServerButtons(data, title, qual, size, onRetry) {
   const hasShare = !!navigator.share;
   const wrap = $('ffServersWrap');
   if (!data.fffast && !data.cloud) {
-    wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">😕</div><p>Koi server available nahi hai abhi</p></div>`;
+    const msgs = {
+      blocked:        'Server abhi busy / blocked hai, thodi der baad dobara try karo',
+      not_offered:    'Is quality ke liye Fast/Cloud server nahi hai, dusri quality try karo',
+      format_changed: 'Site ka format badal gaya lagta hai, developer ko batao',
+    };
+    // "blocked" is usually temporary, so offer a manual retry; the others will not change by retrying
+    if (data.reason === 'blocked' && onRetry) { showRetry(wrap, 'Server abhi busy hai', msgs.blocked, onRetry); return; }
+    wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">😕</div><p>${esc(msgs[data.reason] || 'Koi server available nahi hai abhi')}</p></div>`;
     return;
   }
   wrap.innerHTML = '';
@@ -479,7 +547,7 @@ function renderFFServerButtons(data, title, qual, size) {
         <div class="dl-action-ico">⚡</div>
         <div class="dl-action-info">
           <div class="dl-action-title">10Gbps Fast Download</div>
-          <div class="dl-action-sub">Google Drive backed · Max speed</div>
+          <div class="dl-action-sub">⭐ Recommended · Sabse tez</div>
         </div>
         <div class="dl-action-btns">
           <button class="btn-copy" id="copyFf">📋 Copy</button>
@@ -789,6 +857,44 @@ function emptyHTML(title, sub) {
   </div>`;
 }
 
+// error state with a "try again" button; onRetry runs when it is pressed
+function showRetry(container, title, sub, onRetry) {
+  container.innerHTML = `<div class="state-wrap" style="display:flex">
+    <div class="state-icon">⚠️</div>
+    <h3>${esc(title)}</h3>
+    ${sub ? `<p>${esc(sub)}</p>` : ''}
+    <button class="btn-gen retry-btn" type="button" style="max-width:220px;margin-top:14px">🔄 Dobara try karo</button>
+  </div>`;
+  container.querySelector('.retry-btn').addEventListener('click', onRetry, { once: true });
+}
+
+// fetch JSON with a hard timeout so a stuck request can never leave a spinner running forever.
+// resolves { ok, status, data }; rejects only on network error / timeout.
+async function getJSON(url, ms = 12000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    let data = null;
+    try { data = await r.json(); } catch { /* non-json body */ }
+    return { ok: r.ok, status: r.status, data };
+  } finally { clearTimeout(t); }
+}
+
+// links for the first couple of direct (cloud) qualities are fetched quietly as soon as the list shows,
+// so by the time the user taps one the answer is usually already there (kept in memory ~25s only).
+const PREFETCH = new Map();
+function prefetchServers(links) {
+  links.filter(l => l.dltype !== 'drive').slice(0, 2).forEach(l => {
+    const hit = PREFETCH.get(l.fid);
+    if (hit && Date.now() - hit.t < 25_000) return;
+    PREFETCH.set(l.fid, {
+      t: Date.now(),
+      p: getJSON(`/api/servers?dltype=${encodeURIComponent(l.dltype)}&fid=${encodeURIComponent(l.fid)}`).catch(() => null),
+    });
+  });
+}
+
 function setMovieHead(info) {
   $('movieHead').innerHTML = `
     ${info.poster ? `<img class="movie-thumb" src="${esc(info.poster)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
@@ -1011,10 +1117,13 @@ function loadLatestChips() {
       items.forEach(item => {
         const btn = document.createElement('button');
         btn.className = 'chip';
+        btn.setAttribute('role', 'listitem');
         btn.textContent = item.title;
         frag.appendChild(btn);
       });
       wrap.appendChild(frag);
+      const outer = $('chipsOuter');
+      if (outer) outer.hidden = false;
       updateChipsHint();
     })
     .catch(() => {});

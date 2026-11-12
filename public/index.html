@@ -44,7 +44,7 @@
               type="text"
               id="searchInput"
               class="search-input"
-              placeholder="Movie ya web series ka naam..."
+              placeholder="Movie / series ka naam..."
               autocomplete="off"
               spellcheck="false"
               enterkeyhint="search"
@@ -53,14 +53,10 @@
           </div>
         </div>
 
-        <div class="chips-outer">
-          <span class="chips-label">Trending 🔥</span>
-          <div class="chips" id="trendingChips" role="list" aria-label="Trending searches">
-            <button class="chip" data-query="Newtons 3rd Law" role="listitem">Newtons 3rd Law</button>
-            <button class="chip" data-query="Geralds Game" role="listitem">Geralds Game</button>
-            <button class="chip" data-query="The Love Hypothesis" role="listitem">The Love Hypothesis</button>
-            <button class="chip" data-query="Hanuman Ansh" role="listitem">Hanuman Ansh</button>
-          </div>
+        <!-- filled from /api/latest; stays hidden until real data arrives (nothing hardcoded) -->
+        <div class="chips-outer" id="chipsOuter" hidden>
+          <span class="chips-label">Latest 🔥</span>
+          <div class="chips" id="trendingChips" role="list" aria-label="Latest movies"></div>
           <span class="chips-scroll-hint" id="chipsScrollHint">↓ aur bhi hain</span>
         </div>
       </div>

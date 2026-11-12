@@ -12,6 +12,16 @@ app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// log any API call slower than 3s (path only, no query string) so "why was it slow" has an answer in the logs
+app.use('/api', (req, res, next) => {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - t0;
+    if (ms > 3000) console.warn(`[slow] ${req.method} ${req.originalUrl.split('?')[0]} ${res.statusCode} ${ms}ms`);
+  });
+  next();
+});
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const PF = (process.env.POTTERFLIX_URL || 'https://potterflixmovies.vercel.app').replace(/\/$/, '');
 
@@ -69,6 +79,17 @@ function parseFiles(data) {
 }
 
 
+// hosts remembered from parsed pages (linkmake id -> linkmake host, filesdl file id -> filesdl host).
+// only a hint: defaults below kick in on a cold serverless instance or an unknown id.
+const DEFAULT_LM_HOST  = 'linkmake.in';
+const DEFAULT_FD_HOST  = 'new1.filesdl.in';
+const FD_WORKER        = process.env.WORKER_URL    || 'https://lallu.im-sahil1011.workers.dev';
+// set WORKER_SECRET in Vercel env (same value as in the worker) — the fallback only keeps old setups working
+const WORKER_SECRET    = process.env.WORKER_SECRET || 'lallu_x9k2p';
+const LM_HOSTS = new Map();
+const FD_HOSTS = new Map();
+const FD_RESOLVED = new Map();   // "host/type" -> { host, path, ts } after following load-balancer redirects
+
 // simple ttl cache, prune on overflow
 const _cache = new Map();
 
@@ -87,25 +108,58 @@ function cacheSet(key, val, ttl = 60_000) {
   }
 }
 
-// filmyfly active domain — refreshes every hour via analytis api
-let _domain   = 'https://filmyfly.bingo';
-let _domainTs = 0;
+// filmyfly active domain — nothing hardcoded as the single source of truth.
+// candidates (in order): analytis api -> last known good -> env list.
+// every candidate is verified (/rss.xml must return real rss) before it is used,
+// so a dead/parked domain is never picked. callers can force a re-resolve on failure.
+const FF_ANALYTICS = process.env.DOMAIN_API || 'https://google.analytis.top/analytis';
+const FF_FALLBACKS = (process.env.FILMYFLY_DOMAINS || '')   // optional extra candidates, empty by default
+  .split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean);
 
-async function activeDomain() {
-  if (Date.now() - _domainTs < 3_600_000) return _domain;
+let _domain   = null;   // last verified domain
+let _domainTs = 0;
+let _domainP  = null;   // in-flight refresh, shared by concurrent callers
+
+async function probeDomain(d) {
   try {
-    const r = await fetch('https://google.analytis.top/analytis', {
-      headers: { 'User-Agent': UA },
-      signal: AbortSignal.timeout(5_000),
-    });
+    const r = await fetch(`${d}/rss.xml`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(4_000) });
+    if (!r.ok) return false;
+    return /<rss/i.test((await r.text()).slice(0, 500));
+  } catch { return false; }
+}
+
+async function analyticsDomain() {
+  try {
+    const r = await fetch(FF_ANALYTICS, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(4_000) });
     const j = await r.json();
-    _domain   = Buffer.from(j.c, 'base64').toString().trim().replace(/\/$/, '');
-    _domainTs = Date.now();
-    console.log('[domain] active:', _domain);
+    const d = Buffer.from(j.c, 'base64').toString().trim().replace(/\/$/, '');
+    return /^https?:\/\//.test(d) ? d : null;
   } catch (e) {
-    console.error('[domain] refresh failed, using:', _domain, e.message);
+    console.error('[domain] analytis api failed:', e.message);
+    return null;
   }
-  return _domain;
+}
+
+async function resolveDomain() {
+  const cands = [...new Set([await analyticsDomain(), _domain, ...FF_FALLBACKS].filter(Boolean))];
+  for (const d of cands) {
+    if (await probeDomain(d)) {
+      if (d !== _domain) console.log('[domain] active:', d);
+      _domain = d; _domainTs = Date.now();
+      return d;
+    }
+    console.warn('[domain] dead, skipping:', d);
+  }
+  // nothing verified — keep whatever we had so requests still get a chance
+  _domainTs = Date.now() - 3_000_000;  // retry again in ~10 min
+  if (_domain || cands[0]) return _domain || cands[0];
+  throw new Error('no filmyfly domain available (analytis api down and nothing cached)');
+}
+
+async function activeDomain(force = false) {
+  if (!force && _domain && Date.now() - _domainTs < 3_600_000) return _domain;
+  if (!_domainP) _domainP = resolveDomain().finally(() => { _domainP = null; });
+  return _domainP;
 }
 
 // same slug logic filmyfly uses in their site-helpers.php
@@ -119,23 +173,34 @@ function ffSlug(title) {
 }
 
 // parse the linkmake page html into parts + quality links
-// separator in raw html looks like: &lt;&lt;&lt;&lt;~~ {Part-01 (Ep.01-05)}~~&gt;&gt;&gt;&gt;
+// part separators come in many decorated forms, e.g.
+//   &lt;&lt;&lt;&lt;~~ {Part-01 (Ep.01-05)}~~&gt;&gt;&gt;&gt;
+//   &lt;&lt;==××-- { Ep.01-05 } --××==&gt;&gt;
+//   &lt;&lt;&lt;=××-- {Part-01 Ep.01-10} --××=&gt;&gt;&gt;
+//   &lt;&lt;=×××--- Ep.01-08 ---×××=&gt;&gt;          (no braces at all)
+// so: anything wrapped in 2+ "<" ... 2+ ">" counts, and the decoration is stripped off the label.
 function parseLinkmakePage(html) {
-  const sepRe = /(?:&lt;){2,4}~*\s*\{([^}]+)\}~*(?:&gt;){2,4}/g;
+  const sepRe = /(?:&lt;|<){2,}((?:(?!&lt;|&gt;|<|>)[^\n]){2,120}?)(?:&gt;|>){2,}/g;
 
   const seps = [];
   let m;
   while ((m = sepRe.exec(html)) !== null) {
-    seps.push({ label: m[1].trim(), start: m.index, end: m.index + m[0].length });
+    const label = m[1].replace(/^[\s~=×*_\-–—{]+|[\s~=×*_\-–—}]+$/g, '').replace(/\s+/g, ' ').trim();
+    if (!label || !/[A-Za-z0-9]/.test(label)) continue;
+    seps.push({ label, start: m.index, end: m.index + m[0].length });
   }
 
   function extractLinks(chunk) {
     const links = [];
-    const re = /href="(https:\/\/new\d+\.filesdl\.[^"]+)"[^>]*>\s*<div class="dll">\s*([^<]+)/g;
+    // host-agnostic + markup-agnostic: any <a href=".../(cloud|drive)/ID">...label...</a>
+    // (filesdl has moved between new1/new6/new8 and .in/.top; the inner <div class="dll"> wrapper is optional)
+    const re = /<a\b[^>]*?href=["'](https:\/\/([^\/"']+)\/(?:cloud|drive)\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/g;
     let lm;
     while ((lm = re.exec(chunk)) !== null) {
-      const url   = lm[1];
-      const label = lm[2].trim();
+      const url   = lm[1].replace(/&amp;/g, '&');
+      const host  = lm[2];
+      const label = lm[3].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!label) continue;
       const sizeM = label.match(/(\d+(?:\.\d+)?(?:mb|Mb|Gb|GB|gb))/i);
       const qualM = label.match(/\{([^}]+)\}/);
       const fidM  = url.match(/\/(cloud|drive)\/([^?&\s]+)/);
@@ -146,6 +211,7 @@ function parseLinkmakePage(html) {
         quality: qualM ? qualM[1].trim() : null,
         fid:     fidM[2],
         dltype:  fidM[1],  // cloud or drive
+        host,
       });
     }
     return links;
@@ -155,11 +221,19 @@ function parseLinkmakePage(html) {
     return [{ label: null, links: extractLinks(html) }];
   }
 
-  return seps.map((sep, i) => {
+  const parts = seps.map((sep, i) => {
     const start = sep.end;
     const end   = i + 1 < seps.length ? seps[i + 1].start : html.length;
     return { label: sep.label, links: extractLinks(html.substring(start, end)) };
   });
+
+  // links that sit before the first separator would otherwise be lost
+  const pre = extractLinks(html.substring(0, seps[0].start));
+  if (pre.length) parts.unshift({ label: 'Main', links: pre });
+
+  // footer-style separators ("...The End...") own no links — drop empty parts (keep all if nothing parsed)
+  const nonEmpty = parts.filter(p => p.links.length);
+  return nonEmpty.length ? nonEmpty : parts;
 }
 
 // ua parser — reads device/os/browser from user-agent header
@@ -252,17 +326,32 @@ async function redisCmd(...args) {
   try {
     const r = await fetch(
       `${url}/${args.map(a => encodeURIComponent(a)).join('/')}`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2_500) }   // never let redis hang a request
     );
     return (await r.json()).result;
+  } catch { return null; }
+}
+
+// several redis commands in ONE http round trip (upstash /pipeline)
+async function redisPipeline(cmds) {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  try {
+    const r = await fetch(`${url}/pipeline`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmds),
+      signal: AbortSignal.timeout(2_500),
+    });
+    return await r.json();
   } catch { return null; }
 }
 
 async function saveLog(entry) {
   const str = JSON.stringify(entry);
   if (process.env.UPSTASH_REDIS_REST_URL) {
-    await redisCmd('lpush', 'lallu:logs', str);
-    await redisCmd('ltrim', 'lallu:logs', '0', '999');
+    await redisPipeline([['LPUSH', 'lallu:logs', str], ['LTRIM', 'lallu:logs', '0', '999']]);
   } else {
     MEM_LOGS.unshift(entry);
     if (MEM_LOGS.length > 1000) MEM_LOGS.pop();
@@ -315,7 +404,11 @@ app.get('/api/search', async (req, res) => {
       return url.replace(/webp\/\d+-\d+-\d+x-img\.iwebp\.store/, 'webp/300-420-2x-img.iwebp.store');
     }
 
-    const results = (data.results || []).map(item => ({
+    // filmyfly marks titles whose download links were removed by giving them the shared "404.png" poster;
+    // those only ever lead to "Link nahi mila", so don't show them at all
+    const isBroken = item => /\/404\.(png|webp|jpe?g)(\?|$)/i.test(item.poster || '');
+
+    const results = (data.results || []).filter(item => !isBroken(item)).map(item => ({
       id:       String(item.filmyfly),
       title:    item.title,
       slug:     ffSlug(item.title),
@@ -334,66 +427,130 @@ app.get('/api/search', async (req, res) => {
 });
 
 // movie page — fetch filmyfly movie page to get linkmake id + basic meta
-app.get('/api/movie', async (req, res) => {
-  const { id, slug } = req.query;
-  if (!id || !slug) return res.status(400).json({ error: 'id and slug required' });
+const httpErr = (status, message) => Object.assign(new Error(message), { status });
 
+async function loadMovie(id) {
   const cKey = `movie:${id}`;
   const hit  = cacheGet(cKey);
-  if (hit) return res.json(hit);
+  if (hit) return hit;
 
-  try {
-    const domain  = await activeDomain();
-    const pageUrl = `${domain}/movie/${id}/${encodeURIComponent(slug)}.html`;
+  {
+    // filmyfly ignores the slug segment (any "/movie/<id>/x.html" resolves), so we never
+    // depend on our own slug logic. if the domain looks dead, re-resolve once and retry.
+    const loadPage = async (domain) => {
+      const r = await fetch(`${domain}/movie/${encodeURIComponent(id)}/x.html`, {
+        headers: { 'User-Agent': UA, Referer: domain + '/' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      return r.ok ? r.text() : null;
+    };
+    // prefer the main download button (a.bg2), fall back to any /view/ link on the page
+    const LM_RE = {
+      exec: (h) => h.match(/class=["']bg2["'][^>]*href=["'](https:\/\/([^\/"']+)\/view\/([^"'?#]+))["']/)
+                || h.match(/href=["'](https:\/\/([^\/"']+)\/view\/([^"'?#]+))["'][^>]*class=["']bg2["']/)
+                || h.match(/href=["'](https:\/\/([^\/"']+)\/view\/([^"'?#]+))["']/),
+    };
 
-    const r    = await fetch(pageUrl, {
-      headers: { 'User-Agent': UA, Referer: domain },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const html = await r.text();
-
-    const lmMatch = html.match(/href="(https:\/\/linkmake\.in\/view\/([^"]+))"/);
-    if (!lmMatch) return res.status(404).json({ error: 'no linkmake link on this page' });
+    let html = null, lmMatch = null;
+    try { html = await loadPage(await activeDomain()); lmMatch = html && LM_RE.exec(html); } catch { /* retry below */ }
+    if (!lmMatch) {
+      const fresh = await activeDomain(true);
+      html = await loadPage(fresh);
+      lmMatch = html && LM_RE.exec(html);
+    }
+    if (!lmMatch) throw httpErr(404, 'no linkmake link on this page');
+    LM_HOSTS.set(lmMatch[3], lmMatch[2]);
 
     const poster = (html.match(/property="og:image"\s+content="([^"]+)"/) || [])[1] || null;
     const size   = (html.match(/Size:<\/strong>\s*<span[^>]*>([^<]+)<\/span>/) || [])[1]?.trim() || null;
     const genres = (html.match(/Genre:<\/strong>\s*<span[^>]*>([^<]+)<\/span>/) || [])[1]?.trim() || null;
 
-    const payload = { linkmakeId: lmMatch[2], poster, size, genres };
+    const payload = { linkmakeId: lmMatch[3], poster, size, genres };
     cacheSet(cKey, payload, 300_000);
-    res.json(payload);
+    return payload;
+  }
+}
+
+app.get('/api/movie', async (req, res) => {
+  const { id } = req.query;   // slug is accepted but unused
+  if (!id || !/^\d+$/.test(id)) return res.status(400).json({ error: 'numeric id required' });
+  try {
+    res.json(await loadMovie(id));
   } catch (e) {
     console.error('[movie]', e.message);
-    res.status(500).json({ error: 'failed to load movie page' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'failed to load movie page' });
   }
 });
 
 // linkmake parser — returns parts array with filesdl ids per quality
 // uses image.linkmake.in subdomain which has no js challenge
-app.get('/api/links', async (req, res) => {
-  const { lmId } = req.query;
-  if (!lmId) return res.status(400).json({ error: 'lmId required' });
-
+async function loadLinks(lmId) {
   const cKey = `links:${lmId}`;
   const hit  = cacheGet(cKey);
-  if (hit) return res.json(hit);
+  if (hit) return hit;
 
-  try {
-    const r    = await fetch(`https://image.linkmake.in/view/${lmId}`, {
-      headers: { 'User-Agent': UA, Referer: 'https://filmyfly.army/' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const html = await r.text();
+  {
+    // host comes from the movie page (remembered in LM_HOSTS); "image." subdomain skips the js
+    // challenge when it exists, otherwise plain host. both tried, first with real links wins.
+    const lmHost = LM_HOSTS.get(lmId) || DEFAULT_LM_HOST;
+    const hosts  = [...new Set([`image.${lmHost.replace(/^image\./, '')}`, lmHost, DEFAULT_LM_HOST])];
+    const domain = await activeDomain().catch(() => 'https://filmyfly.info');   // only used as a Referer
+    let parts = null, html = '';
+    for (const h of hosts) {
+      try {
+        const r = await fetch(`https://${h}/view/${encodeURIComponent(lmId)}`, {
+          headers: { 'User-Agent': UA, Referer: domain + '/' },
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (!r.ok) continue;
+        html = await r.text();
+        const p = parseLinkmakePage(html);
+        if (p.some(x => x.links.length)) { parts = p; break; }
+      } catch { /* try next host */ }
+    }
+    if (!parts) throw httpErr(502, 'no links found on linkmake page');
 
-    const parts = parseLinkmakePage(html);
+    // remember each link's own host so /api/servers goes where the page said, not to a fixed server
+    parts.forEach(p => p.links.forEach(l => FD_HOSTS.set(l.fid, l.host)));
+
+    // by default all qualities are returned and the frontend reveals "drive" ones only if their links
+    // can actually be fetched. HIDE_DRIVE=1 drops them server-side instead (when a part has cloud ones).
+    if (process.env.HIDE_DRIVE === '1') {
+      parts = parts.map(p => {
+        const cloudOnly = p.links.filter(l => l.dltype !== 'drive');
+        return cloudOnly.length ? { ...p, links: cloudOnly } : p;
+      });
+    }
     const sizeM = html.match(/pt-fsize[^>]*>[\s\S]{0,30}?<span[^>]*>([^<]+)<\/span>/);
 
     const payload = { parts, size: sizeM ? sizeM[1].trim() : null };
     cacheSet(cKey, payload, 120_000);
-    res.json(payload);
+    return payload;
+  }
+}
+
+app.get('/api/links', async (req, res) => {
+  const { lmId } = req.query;
+  if (!lmId) return res.status(400).json({ error: 'lmId required' });
+  try {
+    res.json(await loadLinks(lmId));
   } catch (e) {
     console.error('[links]', e.message);
-    res.status(500).json({ error: 'failed to load links' });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'failed to load links' });
+  }
+});
+
+// movie page + linkmake links in ONE round trip (frontend used to call /api/movie then /api/links)
+app.get('/api/movie-links', async (req, res) => {
+  const { id } = req.query;
+  if (!id || !/^\d+$/.test(id)) return res.status(400).json({ error: 'numeric id required' });
+  try {
+    const movie = await loadMovie(id);
+    const links = await loadLinks(movie.linkmakeId);
+    res.json({ movie, links });
+  } catch (e) {
+    console.error('[movie-links]', e.message);
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'failed to load movie', stage: e.status ? undefined : 'upstream' });
   }
 });
 
@@ -403,82 +560,224 @@ app.get('/api/links', async (req, res) => {
 
 let cachedProxies = [];
 let lastProxyFetch = 0;
+let _proxyRefresh = null;                 // in-flight refresh, shared by concurrent requests
+const WARM_PROXIES = new Map();           // "ip:port" -> last time it actually delivered a page
 
-// fetch fresh proxy list every 10 mins
-async function getFreshProxies() {
-  try {
-    const r = await fetch('https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=elite');
-    const txt = await r.text();
-    const proxies = txt.split('\n').map(p => p.trim()).filter(Boolean);
-    if (proxies.length > 0) {
-      cachedProxies = proxies;
-      lastProxyFetch = Date.now();
+// proxy sources, newest/biggest first (v4 gives ~800 proxies, the old v2 only ~60)
+const PROXY_SOURCES = [
+  'https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=ipport&format=text&timeout=5000',
+  'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=elite',
+];
+
+// refresh the proxy list. 4s cap per source so a slow proxy site can never hang a request.
+function getFreshProxies() {
+  if (_proxyRefresh) return _proxyRefresh;
+  _proxyRefresh = (async () => {
+    for (const src of PROXY_SOURCES) {
+      try {
+        const r   = await fetch(src, { signal: AbortSignal.timeout(4_000) });
+        const txt = await r.text();
+        const proxies = txt.split('\n').map(p => p.trim()).filter(p => /^[\d.]+:\d+$/.test(p));
+        if (proxies.length > 0) {
+          cachedProxies = proxies;
+          lastProxyFetch = Date.now();
+          return;
+        }
+      } catch (e) { console.error('[proxies] fetch failed:', e.message); }
     }
-  } catch(e) { console.error('[proxies] fetch failed:', e.message); }
+  })().finally(() => { _proxyRefresh = null; });
+  return _proxyRefresh;
 }
 
-async function fetchFilesdlHtml(dltype, fid) {
-  const targetPath = `/${dltype}/${fid}`;
-  const targetHost = 'new6.filesdl.top';
-  
-  if (!cachedProxies.length || Date.now() - lastProxyFetch > 10 * 60 * 1000) {
-    await getFreshProxies();
+// never block a user request on a stale list: empty -> wait (max 3s), stale -> refresh in background
+async function ensureProxies() {
+  const age = Date.now() - lastProxyFetch;
+  if (!cachedProxies.length) {
+    await Promise.race([getFreshProxies(), new Promise(r => setTimeout(r, 3_000))]);
+  } else if (age > 10 * 60_000) {
+    getFreshProxies();   // fire and forget
   }
-  
-  // try direct pehle, agar cf ne block nahi kiya toh fastest yahi hoga
-  const directPromise = new Promise(async (resolve, reject) => {
+}
+
+// proxies to try this round: recent winners first, then random others (shuffled so we don't hammer the same ones)
+function pickProxies(n = 15) {
+  const warm = [...WARM_PROXIES.entries()]
+    .filter(([, t]) => Date.now() - t < 30 * 60_000)
+    .sort((a, b) => b[1] - a[1]).slice(0, 6).map(([p]) => p);
+  const rest = cachedProxies.filter(p => !warm.includes(p));
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return [...warm, ...rest].slice(0, n);
+}
+
+// every download <a> on a filesdl page: { href, cls: [classes], text }. attribute order and quote style don't matter.
+function filesdlAnchors(html) {
+  const out = [];
+  const re  = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const attrs = m[1];
+    const hm    = attrs.match(/\bhref\s*=\s*(?:'([^']*)'|"([^"]*)")/i);
+    const cm    = attrs.match(/\bclass\s*=\s*(?:'([^']*)'|"([^"]*)")/i);
+    const href  = hm ? (hm[1] ?? hm[2]) : null;
+    const cls   = (cm ? (cm[1] ?? cm[2]) : '').split(/\s+/).filter(Boolean);
+    if (!href || !/^https:\/\//i.test(href)) continue;
+    out.push({ href: href.replace(/&amp;/g, '&'), cls, text: m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() });
+  }
+  return out;
+}
+
+// a real filesdl page has styled download buttons (class="button", "button1", "download-link"...);
+// a cloudflare challenge/blocked page has none.
+function looksLikeFilesdlPage(html) {
+  return /class\s*=\s*['"][^'"]*\b(button\d*|download-link)\b/i.test(html);
+}
+
+// Only two servers matter: "fffast" (10Gbps direct) and "cloud direct". Everything else is ignored.
+//  fffast: the anchor whose class is exactly "button"; fallback = any link on a fffast.* host
+//  cloud : the anchor with class "download-link"; fallback = link on a known cloud-CDN host (CLOUD_HOSTS env, regex)
+const CLOUD_HOSTS = new RegExp(process.env.CLOUD_HOSTS || '(^|\\.)(r2\\.dev|awssspp\\d*\\.store)$', 'i');
+const NOT_CLOUD   = /pixeldrain|gofile|hubcloud|gdflix|telegram|t\.me|mediafire|drive\.google|mega\.nz|fuckingfast|filepress|linkbox|drivenext|workers\.dev/i;
+
+function parseServersHtml(html) {
+  const all = filesdlAnchors(html);
+  const btn = all.filter(a => a.cls.some(c => /^button\d*$|^download-link$/.test(c)));
+  const host = a => { try { return new URL(a.href).hostname; } catch { return ''; } };
+
+  const ff = btn.find(a => a.cls.length === 1 && a.cls[0] === 'button')
+          || all.find(a => /^fffast\./i.test(host(a)));
+
+  const cloud = all.find(a => a.cls.includes('download-link') && !NOT_CLOUD.test(a.href))
+             || all.find(a => CLOUD_HOSTS.test(host(a)));
+
+  return { fffast: ff ? ff.href : null, cloud: cloud ? cloud.href : null, anchors: btn.length };
+}
+
+// filesdl sits behind a load balancer (new1 -> new6, drive -> new8 ...). proxies tunnel with CONNECT
+// and can't follow redirects, so we learn where a link really lives with one cheap manual-redirect hop.
+// result is cached per host+type; on any failure we fall back to the host the page gave us.
+const FD_HOST_OK = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.filesdl\.[a-z]{2,}$/i;
+
+async function resolveFilesdlTarget(host, dltype, fid) {
+  const key = `${host}/${dltype}`;
+  const c   = FD_RESOLVED.get(key);
+  if (c && Date.now() - c.ts < 10 * 60_000) return { host: c.host, path: `/${dltype}/${fid}` };
+  try {
+    const r = await fetch(`https://${host}/${dltype}/${fid}`, {
+      redirect: 'manual', headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(2500),
+    });
+    const loc = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+    if (loc) {
+      const u = new URL(loc, `https://${host}`);
+      if (FD_HOST_OK.test(u.hostname)) {
+        FD_RESOLVED.set(key, { host: u.hostname, ts: Date.now() });
+        return { host: u.hostname, path: `/${dltype}/${fid}` };
+      }
+    } else if (r.status === 200) {
+      FD_RESOLVED.set(key, { host, ts: Date.now() });
+    }
+  } catch { /* use original host */ }
+  return { host, path: `/${dltype}/${fid}` };
+}
+
+async function fetchFilesdlHtml(dltype, fid, linkHost) {
+  const startHost   = FD_HOST_OK.test(linkHost || '') ? linkHost : DEFAULT_FD_HOST;
+  const targetPath  = `/${dltype}/${fid}`;
+
+  await ensureProxies();   // never blocks on a stale list (refreshes in background)
+
+  // --- Layer 1: Direct fetch ---
+  const directHosts = [startHost];
+
+  const directPromises = directHosts.map(h => new Promise(async (resolve, reject) => {
     try {
-      const r = await fetch(`https://${targetHost}${targetPath}`, {
-        headers: { 'User-Agent': UA, 'Referer': 'https://new6.filesdl.top/' },
+      const r = await fetch(`https://${h}${targetPath}`, {
+        headers: { 'User-Agent': UA, 'Referer': 'https://linkmake.in/' },
         signal: AbortSignal.timeout(5000)
       });
       const html = await r.text();
-      if (/class='button2 download-link'/.test(html) || /class='button'/.test(html)) resolve(html);
-      else reject('CF Blocked Direct');
-    } catch { reject('Direct Error'); }
+      if (looksLikeFilesdlPage(html)) { console.log(`[filesdl] direct ok: ${h}`); resolve(html); }
+      else reject(`CF blocked: ${h}`);
+    } catch { reject(`direct error: ${h}`); }
+  }));
+
+  // --- Layer 2: CF Worker (same CF network = no challenge) ---
+  const workerPromise = new Promise(async (resolve, reject) => {
+    for (const wh of [startHost]) {
+      try {
+        const targetUrl = `https://${wh}${targetPath}`;
+        const r = await fetch(
+          `${FD_WORKER}?url=${encodeURIComponent(targetUrl)}&mode=html`,
+          { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(7000) }
+        );
+        if (!r.ok) continue;
+        const html = await r.text();
+        if (looksLikeFilesdlPage(html)) { console.log(`[filesdl] worker ok: ${wh}`); return resolve(html); }
+      } catch { /* try next */ }
+    }
+    reject('worker: all hosts blocked');
   });
 
-  // top 15 proxies se concurrent hit, jo jeetega wo pehle html return karega
-  const raceProxies = cachedProxies.slice(0, 15);
-  cachedProxies = [...cachedProxies.slice(15), ...cachedProxies.slice(0, 15)];
+  // --- Layer 3: Free proxy race (CONNECT tunnel, 15 proxies: recent winners first, rest shuffled) ---
+  // proxies only start after direct has had a ~1.2s head start (or has already failed), so in the normal
+  // case no proxy sockets are opened at all. when anyone wins, every other socket is closed right away.
+  let finished = false;
+  const sockets = new Set(), proxyReqs = new Set();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const headStart = Promise.race([sleep(1200), Promise.any(directPromises).catch(() => {})]);
+  const targetP = resolveFilesdlTarget(startHost, dltype, fid);
 
-  const proxyPromises = raceProxies.map(proxy => {
-    return new Promise((resolve, reject) => {
-      const [host, port] = proxy.split(':');
-      const proxyReq = http.request({ host, port, method: 'CONNECT', path: `${targetHost}:443`, timeout: 3500 });
-      
-      proxyReq.on('connect', (res, socket) => {
-        if (res.statusCode !== 200) return reject();
-        const req = https.get({
-          host: targetHost, socket, agent: false, path: targetPath,
-          headers: { 'User-Agent': UA, 'Referer': 'https://new6.filesdl.top/' }
-        }, (res2) => {
-          let data = '';
-          res2.on('data', d => data += d);
-          res2.on('end', () => {
-            if (/class='button2 download-link'/.test(data) || /class='button'/.test(data)) resolve(data);
-            else reject('CF Blocked Proxy');
-          });
+  const proxyPromises = pickProxies(15).map(proxy => new Promise(async (resolve, reject) => {
+    await headStart;
+    if (finished) return reject();
+    const { host: targetHost } = await targetP;
+    if (finished) return reject();
+    const [host, port] = proxy.split(':');
+    const proxyReq = http.request({ host, port, method: 'CONNECT', path: `${targetHost}:443`, timeout: 3500 });
+    proxyReqs.add(proxyReq);
+    proxyReq.on('connect', (res, socket) => {
+      sockets.add(socket);
+      socket.on('error', () => { socket.destroy(); reject(); });
+      if (finished || res.statusCode !== 200) { socket.destroy(); return reject(); }
+      const req = https.get({
+        host: targetHost, socket, agent: false, path: targetPath,
+        headers: { 'User-Agent': UA, 'Referer': 'https://linkmake.in/' }
+      }, (res2) => {
+        let data = '';
+        res2.on('data', d => data += d);
+        res2.on('error', () => { socket.destroy(); reject(); });
+        res2.on('end', () => {
+          socket.destroy();
+          if (looksLikeFilesdlPage(data)) { WARM_PROXIES.set(proxy, Date.now()); resolve(data); }
+          else { WARM_PROXIES.delete(proxy); reject('CF blocked proxy'); }
         });
-        req.on('error', reject);
       });
-      proxyReq.on('error', reject);
-      proxyReq.on('timeout', () => { proxyReq.destroy(); reject(); });
-      proxyReq.end();
+      req.on('error', () => { socket.destroy(); reject(); });
     });
-  });
+    proxyReq.on('error', reject);
+    proxyReq.on('timeout', () => { proxyReq.destroy(); reject(); });
+    proxyReq.end();
+  }));
 
-  // vercel ka free tier max 10s chalta hai, isliye 8s max timeout
-  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Race Timeout')), 8000));
-  
+  // vercel free tier 10s limit; saare layers ek saath race mein
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 8500); });
+
   try {
-    const winnerHtml = await Promise.race([
-      Promise.any([directPromise, ...proxyPromises]),
+    return await Promise.race([
+      Promise.any([...directPromises, workerPromise, ...proxyPromises]),
       timeoutPromise
     ]);
-    return winnerHtml;
   } catch (e) {
+    console.warn(`[filesdl] all layers failed (${dltype}/${fid}):`, e?.message || e);
     return null;
+  } finally {
+    finished = true;
+    clearTimeout(timer);
+    sockets.forEach(s => s.destroy());
+    proxyReqs.forEach(r => r.destroy());
   }
 }
 
@@ -486,38 +785,46 @@ app.get('/api/servers', async (req, res) => {
   const { dltype, fid } = req.query;
   if (!['cloud', 'drive'].includes(dltype) || !fid) return res.status(400).json({ error: 'bad params' });
 
+  // "drive" pages sit behind a Cloudflare challenge meant for real browsers, so the server does not
+  // fetch them at all: hand back the filesdl page itself and let the user open it in their own browser.
+  // (the link's own host redirects to the right server, so nothing about new6/new8 is hardcoded)
+  if (dltype === 'drive') {
+    const h = FD_HOSTS.get(fid);
+    const host = FD_HOST_OK.test(h || '') ? h : DEFAULT_FD_HOST;
+    return res.json({ cloud: null, fffast: null, reason: 'external', fallbackUrl: `https://${host}/drive/${encodeURIComponent(fid)}` });
+  }
+
   const cKey = `servers:${dltype}:${fid}`;
   const hit  = cacheGet(cKey);
   if (hit) return res.json(hit);
 
   try {
-    const html = await fetchFilesdlHtml(dltype, fid);
-    
+    const html = await fetchFilesdlHtml(dltype, fid, FD_HOSTS.get(fid));
+
     if (!html) {
-      return res.json({ cloud: null, fffast: null });
+      console.warn(`[servers] ${dltype}/${fid}: no page (all 3 layers failed)`);
+      const payload = { cloud: null, fffast: null, reason: 'blocked' };
+      cacheSet(cKey, payload, 5_000);
+      return res.json(payload);
     }
 
-    const SKIP_HOSTS = ['pixeldrain', 'gofile', 'hubcloud', 'gdflix', 'telegram', 'mediafire', 'drive.google', 'mega.nz', 'fuckingfast', 'filepress', 'linkbox'];
-    const cloudM = html.match(/href='(https:\/\/[^\s']+)'\s+class='button2 download-link'/);
+    const { fffast, cloud: rawCloud, anchors } = parseServersHtml(html);
     let cloudUrl = null;
-    if (cloudM) {
-      const rawHref = cloudM[1];
-      const isSkip  = SKIP_HOSTS.some(h => rawHref.includes(h));
-      if (!isSkip) {
-        const token  = Math.floor(1000000000 + Math.random() * 9000000000);
-        const rawUrl = rawHref + '&token=' + token;
-        cloudUrl = `https://lallu.im-sahil1011.workers.dev?s=lallu_x9k2p&url=${encodeURIComponent(rawUrl)}`;
-      }
+    if (rawCloud) {
+      const token  = Math.floor(1000000000 + Math.random() * 9000000000);
+      const rawUrl = rawCloud + (rawCloud.includes('?') ? '&' : '?') + 'token=' + token;
+      cloudUrl = `${FD_WORKER}?s=${encodeURIComponent(WORKER_SECRET)}&url=${encodeURIComponent(rawUrl)}`;
     }
 
-    const ffM = html.match(/href='(https:\/\/fffast\.filesdl\.in\/[^']+)'\s+class='button'/);
+    const payload = { cloud: cloudUrl, fffast };
+    if (!cloudUrl && !fffast) {
+      // page loaded fine but we found neither: either the site stopped offering them for this file,
+      // or it changed its markup (no recognisable download buttons at all)
+      payload.reason = anchors === 0 ? 'format_changed' : 'not_offered';
+      console.warn(`[servers] ${dltype}/${fid}: ${payload.reason} (${anchors} button anchors)`);
+    }
 
-    const payload = {
-      cloud:  cloudUrl,
-      fffast: ffM ? ffM[1] : null,
-    };
-
-    cacheSet(cKey, payload, 30_000);
+    cacheSet(cKey, payload, payload.reason ? 5_000 : 30_000);
     res.json(payload);
   } catch (e) {
     console.error('[servers]', e.message);
@@ -565,10 +872,21 @@ app.post('/api/track', async (req, res) => {
 });
 
 // admin
+// admin password comes ONLY from the ADMIN_PASSWORD env var (no built-in default); unset = admin disabled
+function adminAuth(password, res) {
+  const real = process.env.ADMIN_PASSWORD;
+  if (!real) { res.status(503).json({ ok: false, error: 'Admin disabled (ADMIN_PASSWORD not set)' }); return false; }
+  const a = Buffer.from(String(password || '')), b = Buffer.from(real);
+  if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) {
+    res.status(401).json({ ok: false, error: 'Wrong password' });
+    return false;
+  }
+  return true;
+}
+
 app.post('/api/admin', async (req, res) => {
   const { password } = req.body || {};
-  if (password !== (process.env.ADMIN_PASSWORD || 'lallu2024'))
-    return res.status(401).json({ ok: false, error: 'Wrong password' });
+  if (!adminAuth(password, res)) return;
   try {
     const logs  = await getLogs(300);
     const uuids = new Set(logs.map(l => l.uid).filter(Boolean));
@@ -578,8 +896,7 @@ app.post('/api/admin', async (req, res) => {
 
 app.post('/api/admin/clear', async (req, res) => {
   const { password } = req.body || {};
-  if (password !== (process.env.ADMIN_PASSWORD || 'lallu2024'))
-    return res.status(401).json({ ok: false, error: 'Wrong password' });
+  if (!adminAuth(password, res)) return;
   try {
     await clearLogs();
     res.json({ ok: true });
@@ -730,7 +1047,7 @@ app.get('/api/latest', async (req, res) => {
       { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(6_000) }
     );
     const data = await r.json();
-    const items = (data.results || []).slice(0, 8).map(item => ({
+    const items = (data.results || []).filter(item => !/\/404\.(png|webp|jpe?g)(\?|$)/i.test(item.poster || '')).slice(0, 8).map(item => ({
       title: cleanTitle(item.title),
       id:    String(item.filmyfly),
     }));
@@ -743,15 +1060,36 @@ app.get('/api/latest', async (req, res) => {
 });
 
 
-app.get('/api/health', (_, res) => res.json({ ok: true, ts: Date.now() }));
+// health + a quick look at what the server currently believes (handy when something feels slow)
+app.get('/api/health', (_, res) => res.json({
+  ok: true,
+  ts: Date.now(),
+  domain: _domain,
+  domainAgeMin: _domainTs ? Math.round((Date.now() - _domainTs) / 60_000) : null,
+  proxies: cachedProxies.length,
+  warmProxies: WARM_PROXIES.size,
+  proxyListAgeMin: lastProxyFetch ? Math.round((Date.now() - lastProxyFetch) / 60_000) : null,
+}));
 
 
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
+// last-resort error handler: a bug in one route returns a clean JSON error instead of a hung/blank response
+app.use((err, req, res, next) => {   // eslint-disable-line no-unused-vars
+  console.error('[unhandled route error]', req.path, err && err.message);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'server error' });
+});
+
+// one bad socket / rejected promise must never take the whole process down
+process.on('unhandledRejection', e => console.error('[unhandledRejection]', e && e.message || e));
+process.on('uncaughtException',  e => console.error('[uncaughtException]',  e && e.message || e));
+
 if (require.main === module) {
-  activeDomain();  // warm domain cache on startup
-  // auto-refresh domain every 55 mins so the first user after a domain change never hits an error
-  setInterval(activeDomain, 55 * 60 * 1000);
+  // warm domain cache on startup + auto-refresh every 55 mins (errors are logged, never thrown)
+  const warmDomain = () => activeDomain().catch(e => console.error('[domain]', e.message));
+  warmDomain();
+  setInterval(warmDomain, 55 * 60 * 1000);
   app.listen(PORT, () => console.log(`lallu → http://localhost:${PORT}`));
 }
 module.exports = app;
