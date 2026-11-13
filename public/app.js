@@ -29,11 +29,12 @@ function getUID() {
   const KEY = 'lallu_uid';
   let uid = localStorage.getItem(KEY);
   if (!uid) {
-    uid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
+    uid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+          const r = Math.random() * 16 | 0;
+          return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
     localStorage.setItem(KEY, uid);
   }
   return uid;
@@ -42,22 +43,27 @@ function getUID() {
 const UID = getUID();
 
 let _clientHints = null;
-async function fetchClientHints() {
-  try {
-    if (!navigator.userAgentData) return null;
-    const h = await navigator.userAgentData.getHighEntropyValues(['platform', 'platformVersion', 'mobile', 'model']);
-    _clientHints = { platform: h.platform || null, platformVersion: h.platformVersion || null, mobile: h.mobile ?? false, model: h.model || null };
-    return _clientHints;
-  } catch { return null; }
+let _hintsPromise = null;
+function fetchClientHints() {
+  _hintsPromise = (async () => {
+    try {
+      if (!navigator.userAgentData) return;
+      const h = await navigator.userAgentData.getHighEntropyValues(['platform', 'platformVersion', 'mobile', 'model']);
+      _clientHints = { platform: h.platform || null, platformVersion: h.platformVersion || null, mobile: h.mobile ?? false, model: h.model || null };
+    } catch {}
+  })();
 }
 
 function track(action, data = {}) {
-  fetch('/api/track', {
+  const fire = () => fetch('/api/track', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, data, uid: UID, clientHints: _clientHints }),
     keepalive: true,
   }).catch(() => {});
+  if (_hintsPromise && !_clientHints) {
+    Promise.race([_hintsPromise, new Promise(r => setTimeout(r, 300))]).then(fire);
+  } else { fire(); }
 }
 
 // token logic for pf worker
@@ -190,7 +196,7 @@ async function doSearch(q) {
     const finalize = () => {
       pending--;
       if (pending === 0) {
-        // bache skeleton cards ko smoothly hata do
+        if (S.query !== q) return; // new search started — don't touch its skeletons
         grid.querySelectorAll('.card-skeleton').forEach(el => {
           el.classList.add('skel-removing');
           el.addEventListener('animationend', () => el.remove(), { once: true });
@@ -200,6 +206,7 @@ async function doSearch(q) {
     };
 
     const processResults = (data, isFF) => {
+      if (S.query !== q) { finalize(); return; } // stale response from aborted search
       const results = data.results || [];
       if (isFF) {
         S.ffTotalPages = data.pages || 1;
@@ -446,7 +453,7 @@ function makeQualityCard(link) {
 
   card.addEventListener('click', () => {
     S.activeLink = link;
-    track('download_click', { title: S.movie?.title, quality: qual, size });
+    track('download_click', { title: S.movie?.title, quality: qual, size, source: 'Server 1' });
     openFFDownload(link);
   }, { passive: true });
   return card;
@@ -500,6 +507,7 @@ function openFFDownload(link) {
     if (S.activeLink !== myLink) return;                            // user already went back / picked another one
     if (r && r.ok && r.data) return renderFFServerButtons(r.data, title, qual, size, () => { PREFETCH.delete(myLink.fid); show1(); });
     if (attempt < 1) return fetchServers(1);
+    track('server_error', { title, qual, reason: 'timeout' });
     showRetry(wrap, 'Server links nahi mile', 'Connection ya server slow hai', () => { PREFETCH.delete(myLink.fid); show1(); });
   };
   const show1 = () => {
@@ -520,7 +528,8 @@ function renderFFServerButtons(data, title, qual, size, onRetry) {
       format_changed: 'Site ka format badal gaya lagta hai, developer ko batao',
     };
     // "blocked" is usually temporary, so offer a manual retry; the others will not change by retrying
-    if (data.reason === 'blocked' && onRetry) { showRetry(wrap, 'Server abhi busy hai', msgs.blocked, onRetry); return; }
+    if (data.reason === 'blocked' && onRetry) { track('server_error', { title, qual, reason: 'blocked' }); showRetry(wrap, 'Server abhi busy hai', msgs.blocked, onRetry); return; }
+    track('server_error', { title, qual, reason: data.reason || 'no_server' });
     wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">😕</div><p>${esc(msgs[data.reason] || 'Koi server available nahi hai abhi')}</p></div>`;
     return;
   }
@@ -543,23 +552,25 @@ function renderFFServerButtons(data, title, qual, size, onRetry) {
       </div>
       <a class="btn-dl" href="${esc(data.fffast)}" target="_blank" rel="noopener noreferrer">⬇️ Download Karo</a>`;
     wrap.appendChild(card);
+    card.querySelector('a.btn-dl').addEventListener('click', () => { track('download_start', { title, qual, source: 'Fast' }); }, { passive: true });
     card.querySelector('#copyFf').addEventListener('click', () => {
       navigator.clipboard.writeText(data.fffast).then(() => toast('📋 Fast link copy ho gaya!')).catch(() => {});
+      track('link_copy', { title, qual, source: 'Fast' });
     }, { passive: true });
     const sf = card.querySelector('#shareFf');
-    if (sf) sf.addEventListener('click', () => { navigator.share({ title, url: data.fffast }).catch(() => {}); }, { passive: true });
+    if (sf) sf.addEventListener('click', () => { navigator.share({ title, url: data.fffast }).catch(() => {}); track('link_share', { title, qual, source: 'Fast' }); }, { passive: true });
   }
 
   if (data.cloud) {
     const card2 = document.createElement('div');
     card2.className = 'dl-action-card';
-    card2.style.marginTop = '12px';
+    card2.style.marginTop = data.fffast ? '12px' : '0';
     card2.innerHTML = `
       <div class="dl-action-top">
         <div class="dl-action-ico">☁️</div>
         <div class="dl-action-info">
           <div class="dl-action-title">Cloud Direct</div>
-          <div class="dl-action-sub">CDN server · Direct file</div>
+          <div class="dl-action-sub">${data.fffast ? 'CDN server · Direct file' : '⭐ Recommended · Direct CDN'}</div>
         </div>
         <div class="dl-action-btns">
           <button class="btn-copy" id="copyCloud">📋 Copy</button>
@@ -568,11 +579,13 @@ function renderFFServerButtons(data, title, qual, size, onRetry) {
       </div>
       <a class="btn-dl" href="${esc(data.cloud)}" target="_blank" rel="noopener noreferrer">☁️ Cloud Download</a>`;
     wrap.appendChild(card2);
+    card2.querySelector('a.btn-dl').addEventListener('click', () => { track('download_start', { title, qual, source: 'Cloud' }); }, { passive: true });
     card2.querySelector('#copyCloud').addEventListener('click', () => {
       navigator.clipboard.writeText(data.cloud).then(() => toast('📋 Cloud link copy ho gaya!')).catch(() => {});
+      track('link_copy', { title, qual, source: 'Cloud' });
     }, { passive: true });
     const sc = card2.querySelector('#shareCloud');
-    if (sc) sc.addEventListener('click', () => { navigator.share({ title, url: data.cloud }).catch(() => {}); }, { passive: true });
+    if (sc) sc.addEventListener('click', () => { navigator.share({ title, url: data.cloud }).catch(() => {}); track('link_share', { title, qual, source: 'Cloud' }); }, { passive: true });
   }
 }
 
@@ -713,7 +726,7 @@ function makePFFileCard(f) {
     <div class="file-arrow">›</div>`;
 
   card.addEventListener('click', () => {
-    track('download_click', { title: S.movie?.title, quality: qual });
+    track('download_click', { title: S.movie?.title, quality: qual, source: 'Server 2', season: S.pfSeason });
     openPFDownload(f);
   }, { passive: true });
   return card;
@@ -785,15 +798,18 @@ function generatePFLink(file, name) {
   const url   = dlUrl(token);
 
   $('dlBtn').href = url;
+  $('dlBtn').addEventListener('click', () => { track('download_start', { title: name, source: 'Server 2' }); }, { passive: true, once: true });
 
   $('copyBtn').addEventListener('click', () => {
     navigator.clipboard.writeText(url).then(() => toast('📋 Link copy ho gaya!')).catch(() => {});
+    track('link_copy', { title: name, source: 'Server 2' });
   }, { passive: true, once: true });
 
   const shareBtn = $('shareBtn');
   if (shareBtn) {
     shareBtn.addEventListener('click', () => {
       navigator.share({ title: name || 'Download Link', text: `🎬 ${name} download karo — 6 ghante valid`, url }).catch(() => {});
+      track('link_share', { title: name, source: 'Server 2' });
     }, { passive: true, once: true });
   }
 
@@ -947,48 +963,108 @@ async function clearAdminLogs() {
   btn.textContent = '🗑️ Clear';
 }
 
-const ACTION_LABEL = { search: '🔍 Search', movie_click: '🎬 Clicked', part_click: '📁 Part', download_click: '⬇️ Download' };
+const ACTION_LABEL = {
+  search: '🔍 Search', movie_click: '🎬 Movie Clicked', part_click: '📁 Part Clicked',
+  download_click: '⬇️ Download', download_start: '🚀 Download Started',
+  link_copy: '📋 Copied', link_share: '📤 Shared', server_error: '❌ Error',
+};
 
-function renderAdminLogs(logs, stats) {
-  const statsEl = $('adminStats');
-  const listEl  = $('adminLogList');
-  const clearBtn = $('adminClearBtn');
+function relTime(ts) {
+  if (!ts) return '';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
-  // Clear button: sirf tab dikhao jab logs hon
-  if (clearBtn) clearBtn.style.display = logs.length ? 'block' : 'none';
+let _adminTab = 'all';
+let _adminLogs = [];
 
-  const searches  = logs.filter(l => l.action === 'search').length;
-  const downloads = logs.filter(l => l.action === 'download_click').length;
-  const uids      = new Set(logs.map(l => l.uid).filter(Boolean)).size;
-  statsEl.innerHTML = `
-    <div class="admin-stat"><span class="admin-stat-n">${logs.length}</span><span class="admin-stat-l">Events</span></div>
-    <div class="admin-stat"><span class="admin-stat-n">${uids || stats.uniqueUsers || 0}</span><span class="admin-stat-l">Users</span></div>
-    <div class="admin-stat"><span class="admin-stat-n">${searches}</span><span class="admin-stat-l">Searches</span></div>
-    <div class="admin-stat"><span class="admin-stat-n">${downloads}</span><span class="admin-stat-l">Downloads</span></div>`;
-  if (!logs.length) { listEl.innerHTML = '<div class="admin-empty">📭 Abhi tak koi activity nahi</div>'; return; }
+function buildLogEntry(log) {
+  const d = log.data || {};
+  let detail = '';
+  if (d.query) detail = `"${d.query}"`;
+  else if (d.title && d.quality) detail = `${d.title} · ${d.quality}`;
+  else if (d.title) detail = d.title;
+  else if (d.part)  detail = d.part;
+  const shortUid = log.uid ? log.uid.substring(0, 8) : null;
+  const src = d.source ? ` <span class="admin-log-src">${esc(d.source)}</span>` : '';
+  const cls = ['download_click','download_start'].includes(log.action) ? ' entry-download'
+             : log.action === 'server_error' ? ' entry-error'
+             : ['link_copy','link_share'].includes(log.action) ? ' entry-copy' : '';
+  const entry = document.createElement('div');
+  entry.className = `admin-log-entry${cls}`;
+  entry.innerHTML = `
+    <div class="admin-log-row1">
+      <span class="admin-log-device">📱 ${esc(log.device || 'Unknown')}</span>
+      <span class="admin-log-time">${relTime(log.ts)}</span>
+    </div>
+    <div class="admin-log-action">${ACTION_LABEL[log.action] || log.action}${detail ? ` — <span class="admin-log-movie">${esc(detail)}</span>` : ''}${src}</div>
+    <div class="admin-log-meta">${esc(log.os)} · ${esc(log.browser)}</div>
+    ${shortUid ? `<span class="admin-log-uid">uid: ${esc(shortUid)}</span>` : ''}`;
+  return entry;
+}
+
+function renderFilteredLogs() {
+  const listEl = $('adminLogList');
+  const filtered = _adminTab === 'downloads' ? _adminLogs.filter(l => ['download_click','download_start'].includes(l.action))
+                 : _adminTab === 'errors'    ? _adminLogs.filter(l => l.action === 'server_error')
+                 : _adminTab === 'copies'    ? _adminLogs.filter(l => ['link_copy','link_share'].includes(l.action))
+                 : _adminLogs;
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="admin-empty">📭 ${_adminTab === 'all' ? 'Abhi tak koi activity nahi' : 'Is filter mein kuch nahi'}</div>`;
+    return;
+  }
   const frag = document.createDocumentFragment();
-  logs.forEach(log => {
-    const d = log.data || {};
-    let detail = '';
-    if (d.query) detail = `"${d.query}"`;
-    else if (d.title && d.quality) detail = `${d.title} · ${d.quality}`;
-    else if (d.title) detail = d.title;
-    else if (d.part)  detail = d.part;
-    const shortUid = log.uid ? log.uid.substring(0, 8) : null;
-    const entry = document.createElement('div');
-    entry.className = 'admin-log-entry';
-    entry.innerHTML = `
-      <div class="admin-log-row1">
-        <span class="admin-log-device">📱 ${esc(log.device)}</span>
-        <span class="admin-log-time">${esc(log.time)}</span>
-      </div>
-      <div class="admin-log-action">${ACTION_LABEL[log.action] || log.action}${detail ? ` — ${esc(detail)}` : ''}</div>
-      <div class="admin-log-meta">${esc(log.os)} · ${esc(log.browser)}</div>
-      ${shortUid ? `<span class="admin-log-uid">uid: ${esc(shortUid)}</span>` : ''}`;
-    frag.appendChild(entry);
-  });
+  filtered.forEach(log => frag.appendChild(buildLogEntry(log)));
   listEl.innerHTML = '';
   listEl.appendChild(frag);
+}
+
+function renderAdminLogs(logs, stats) {
+  _adminLogs = logs;
+  const statsEl  = $('adminStats');
+  const listEl   = $('adminLogList');
+  const clearBtn = $('adminClearBtn');
+
+  if (clearBtn) clearBtn.style.display = logs.length ? 'block' : 'none';
+
+  const downloads = logs.filter(l => ['download_click','download_start'].includes(l.action)).length;
+  const errors    = logs.filter(l => l.action === 'server_error').length;
+  const uids      = new Set(logs.map(l => l.uid).filter(Boolean)).size;
+
+  statsEl.innerHTML = `
+    <div class="admin-stat"><span class="admin-stat-n">${logs.length}</span><span class="admin-stat-l">Events</span></div>
+    <div class="admin-stat"><span class="admin-stat-n">${uids || stats.uniqueUsers || 0}</span><span class="admin-stat-l">Friends</span></div>
+    <div class="admin-stat"><span class="admin-stat-n">${downloads}</span><span class="admin-stat-l">Downloads</span></div>
+    <div class="admin-stat"><span class="admin-stat-n">${errors}</span><span class="admin-stat-l">Errors</span></div>`;
+
+  if (!$('adminTabs')) {
+    const tabsEl = document.createElement('div');
+    tabsEl.id = 'adminTabs';
+    tabsEl.className = 'admin-tabs';
+    tabsEl.innerHTML = `
+      <button class="admin-tab active" data-tab="all">All</button>
+      <button class="admin-tab" data-tab="downloads">⬇️</button>
+      <button class="admin-tab" data-tab="errors">❌${errors ? ` ${errors}` : ''}</button>
+      <button class="admin-tab" data-tab="copies">📋</button>`;
+    listEl.parentNode.insertBefore(tabsEl, listEl);
+    tabsEl.addEventListener('click', e => {
+      const btn = e.target.closest('[data-tab]');
+      if (!btn) return;
+      _adminTab = btn.dataset.tab;
+      tabsEl.querySelectorAll('.admin-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === _adminTab));
+      renderFilteredLogs();
+    });
+  } else {
+    const tabsEl = $('adminTabs');
+    tabsEl.querySelectorAll('.admin-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === _adminTab));
+    const errBtn = tabsEl.querySelector('[data-tab="errors"]');
+    if (errBtn) errBtn.textContent = `❌${errors ? ` ${errors}` : ''}`;
+  }
+
+  renderFilteredLogs();
 }
 
 
@@ -1074,7 +1150,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Latest chips for trending section ────────────────
 function loadLatestChips() {
-  fetch('/api/latest')
+  fetch('/api/latest', { signal: AbortSignal.timeout(8000) })
     .then(r => r.json())
     .then(data => {
       const items = data.items || [];

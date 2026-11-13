@@ -1084,6 +1084,41 @@ img { display: block; max-width: 100%; }
   padding: 36px 20px;
   font-size: 0.82rem;
 }
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  flex-shrink: 0;
+}
+.admin-tab {
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  font-family: var(--font);
+  transition: color var(--t), background var(--t), border-color var(--t);
+}
+.admin-tab:hover { color: var(--text); border-color: var(--border); }
+.admin-tab.active { background: var(--bg); border-color: var(--border); color: var(--amber); font-weight: 700; }
+
+.admin-log-entry.entry-download { border-left: 3px solid rgba(56,189,248,0.5); }
+.admin-log-entry.entry-error    { border-left: 3px solid rgba(239,68,68,0.5); }
+.admin-log-entry.entry-copy     { border-left: 3px solid rgba(52,211,153,0.4); }
+.admin-log-movie { color: var(--text-2); }
+.admin-log-src {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  background: rgba(251,191,36,0.1);
+  border: 1px solid rgba(251,191,36,0.2);
+  border-radius: 3px;
+  font-size: 0.62rem;
+  color: var(--amber);
+  vertical-align: middle;
+}
 
 
 /* ── Skeleton Cards ─────────────────────────────────── */

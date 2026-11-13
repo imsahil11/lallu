@@ -679,12 +679,18 @@ function parseServersHtml(html) {
   const all = filesdlAnchors(html);
   const btn = all.filter(a => a.cls.some(c => /^button\d*$|^download-link$/.test(c)));
   const host = a => { try { return new URL(a.href).hostname; } catch { return ''; } };
+  const isFilesdl = a => /\.filesdl\.[a-z]+/i.test(host(a));
 
   const ff = btn.find(a => a.cls.length === 1 && a.cls[0] === 'button')
           || all.find(a => /^fffast\./i.test(host(a)));
 
-  const cloud = all.find(a => a.cls.includes('download-link') && !NOT_CLOUD.test(a.href))
-             || all.find(a => CLOUD_HOSTS.test(host(a)));
+  // cloud/ pages: button has class "button2 download-link"
+  // drive/ pages: button has class "button2" only (no download-link)
+  // fallback: known CDN host regex, then text-based ("Fast Cloud", "Cloud Direct")
+  const cloud = all.find(a => a.cls.includes('download-link') && !NOT_CLOUD.test(a.href) && !isFilesdl(a))
+             || all.find(a => a.cls.includes('button2') && !NOT_CLOUD.test(a.href) && !isFilesdl(a))
+             || all.find(a => CLOUD_HOSTS.test(host(a)))
+             || all.find(a => /\bcloud\b/i.test(a.text) && !NOT_CLOUD.test(a.href) && !isFilesdl(a));
 
   return { fffast: ff ? ff.href : null, cloud: cloud ? cloud.href : null, anchors: btn.length };
 }
@@ -910,7 +916,18 @@ app.get('/api/servers', async (req, res) => {
       return res.json(payload);
     }
 
-    const { fffast, cloud: rawCloud, anchors } = parseServersHtml(html);
+    const { fffast: rawFffast, cloud: rawCloud, anchors } = parseServersHtml(html);
+
+    // Quick HEAD check on fffast — if 502/down, skip it so cloud becomes the recommended option.
+    // Runs in ~100ms when fffast is healthy; uses full 1.5s timeout only when actually down.
+    let fffast = rawFffast;
+    if (rawFffast) {
+      try {
+        const r = await fetch(rawFffast, { method: 'HEAD', signal: AbortSignal.timeout(1500), redirect: 'follow' });
+        if (!r.ok) { fffast = null; console.log(`[servers] fffast down (${r.status}) for ${dltype}/${fid}`); }
+      } catch { fffast = null; console.log(`[servers] fffast timeout for ${dltype}/${fid}`); }
+    }
+
     let cloudUrl = null;
     if (rawCloud) {
       const token  = Math.floor(1000000000 + Math.random() * 9000000000);
@@ -926,7 +943,9 @@ app.get('/api/servers', async (req, res) => {
       console.warn(`[servers] ${dltype}/${fid}: ${payload.reason} (${anchors} button anchors)`);
     }
 
-    cacheSet(cKey, payload, payload.reason ? 5_000 : 300_000);
+    // Shorter TTL when fffast is down but cloud is present — recovers sooner if fffast comes back
+    const ttl = payload.reason ? 5_000 : (fffast ? 300_000 : 60_000);
+    cacheSet(cKey, payload, ttl);
     res.json(payload);
   } catch (e) {
     console.error('[servers]', e.message);
@@ -959,12 +978,18 @@ app.post('/api/track', async (req, res) => {
       }
     }
 
+    let finalOs = os;
+    if (clientHints?.platformVersion && os === 'Windows 10/11') {
+      const major = parseInt((clientHints.platformVersion || '').split('.')[0], 10);
+      finalOs = major >= 13 ? 'Windows 11' : 'Windows 10';
+    }
+
     await saveLog({
       time   : istTime(),
       ts     : Date.now(),
       uid    : uid || null,
       device : finalDevice,
-      os, browser,
+      os: finalOs, browser,
       mobile : clientHints?.mobile ?? /Mobile/i.test(ua),
       action,
       data   : data || {},
@@ -990,7 +1015,7 @@ app.post('/api/admin', async (req, res) => {
   const { password } = req.body || {};
   if (!adminAuth(password, res)) return;
   try {
-    const logs  = await getLogs(300);
+    const logs  = await getLogs(1000);
     const uuids = new Set(logs.map(l => l.uid).filter(Boolean));
     res.json({ ok: true, logs, stats: { uniqueUsers: uuids.size } });
   } catch { res.json({ ok: false, error: 'Failed to fetch logs' }); }
