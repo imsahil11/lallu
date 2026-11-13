@@ -21,6 +21,9 @@
         <span class="nav-logo-sub">seedha download karo</span>
       </button>
       <div class="nav-right">
+        <div class="nav-search" id="navSearch" style="display:none;">
+          <input type="text" id="navSearchInput" class="nav-search-input" placeholder="Aur dhundho..." autocomplete="off" spellcheck="false" enterkeyhint="search" />
+        </div>
         <button class="nav-home-btn" id="navHomeBtn" aria-label="Back to search">
           ← Search
         </button>
@@ -83,6 +86,12 @@
         <div class="state-icon">😕</div>
         <h3>Kuch nahi mila</h3>
         <p>Doosra naam try karo</p>
+        <div class="empty-search-wrap">
+          <div class="search-box" style="padding: 4px 4px 4px 12px;">
+            <input type="text" id="emptySearchInput" class="search-input" placeholder="Movie / series ka naam..." autocomplete="off" spellcheck="false" enterkeyhint="search" />
+            <button class="search-btn" id="emptySearchBtn">Dhundho</button>
+          </div>
+        </div>
       </div>
     </section>
 

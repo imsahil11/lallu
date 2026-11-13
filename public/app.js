@@ -106,7 +106,13 @@ const S = {
 const SCREENS       = ['hero', 'results', 'files', 'download'];
 const SCREEN_DISPLAY = { hero: 'flex', results: 'block', files: 'block', download: 'block' };
 
+let _currentScreen = 'hero';
+let _resultsScroll = 0;
+
 function show(name) {
+  if (_currentScreen === 'results' && name !== 'results') _resultsScroll = window.scrollY;
+  _currentScreen = name;
+
   SCREENS.forEach(id => {
     const el = $(`s-${id}`);
     if (!el) return;
@@ -117,7 +123,19 @@ function show(name) {
   // admin gear only on the homepage — it just overlaps content everywhere else
   const fab = $('adminFab');
   if (fab) fab.style.display = name === 'hero' ? 'flex' : 'none';
-  window.scrollTo({ top: 0, behavior: 'instant' });
+  // nav search: visible only on results screen
+  const navSearch = $('navSearch');
+  if (navSearch) navSearch.style.display = name === 'results' ? 'flex' : 'none';
+  if (name === 'results' && S.query) { const nsi = $('navSearchInput'); if (nsi) nsi.value = S.query; }
+
+  // hash routing — browser back button support
+  const newHash = name === 'hero' ? '' : name;
+  if (location.hash.replace('#', '') !== newHash) {
+    if (newHash) location.hash = newHash;
+    else history.pushState(null, '', location.pathname + location.search);
+  }
+
+  window.scrollTo({ top: name === 'results' ? _resultsScroll : 0, behavior: 'instant' });
 }
 
 // 
@@ -135,6 +153,8 @@ async function doSearch(q) {
 
   S.query = q;
   track('search', { query: q });
+  [$('searchInput'), $('navSearchInput'), $('emptySearchInput')].forEach(el => { if (el) el.value = q; });
+  _resultsScroll = 0;
   show('results');
   $('resultsQuery').textContent = q;
   const badge = $('resultsCount');
@@ -569,20 +589,20 @@ async function loadPFMovie(m) {
   try {
     if (m.mediaType === 'tv') {
       // TV — load seasons first
-      const sd = await fetch(`/api/pf/seasons?title=${encodeURIComponent(m.title)}`).then(r => r.json());
+      const { data: sd } = await getJSON(`/api/pf/seasons?title=${encodeURIComponent(m.title)}`);
       hideFilesLoading();
-      if (sd.poster && !m.poster) { S.movie = { ...m, poster: sd.poster }; setMovieHead(S.movie); }
-      if (!sd.seasons?.length) {
+      if (sd?.poster && !m.poster) { S.movie = { ...m, poster: sd.poster }; setMovieHead(S.movie); }
+      if (!sd?.seasons?.length) {
         $('filesList').innerHTML = emptyHTML('Seasons nahi mile', 'Baad mein try karo');
         return;
       }
       renderPFSeasons(sd.seasons, m.title);
     } else {
       // Movie — load files directly
-      const fd = await fetch(`/api/pf/files?title=${encodeURIComponent(m.title)}`).then(r => r.json());
+      const { data: fd } = await getJSON(`/api/pf/files?title=${encodeURIComponent(m.title)}`);
       hideFilesLoading();
-      if (fd.poster && !m.poster) { S.movie = { ...m, poster: fd.poster }; setMovieHead(S.movie); }
-      S.pfFiles = fd.files || [];
+      if (fd?.poster && !m.poster) { S.movie = { ...m, poster: fd.poster }; setMovieHead(S.movie); }
+      S.pfFiles = fd?.files || [];
       renderPFFiles(S.pfFiles);
     }
   } catch {
@@ -608,9 +628,9 @@ async function loadPFEpisodes(title, season) {
   S.pfSeason = season;
   setFilesLoading(`Season ${season} ke episodes...`);
   try {
-    const ed = await fetch(`/api/pf/episodes?title=${encodeURIComponent(title)}&season=${season}`).then(r => r.json());
+    const { data: ed } = await getJSON(`/api/pf/episodes?title=${encodeURIComponent(title)}&season=${season}`);
     hideFilesLoading();
-    if (!ed.buttons?.length) { $('filesList').innerHTML = emptyHTML('Episodes nahi mile', ''); return; }
+    if (!ed?.buttons?.length) { $('filesList').innerHTML = emptyHTML('Episodes nahi mile', ''); return; }
     const list = $('filesList');
     list.innerHTML = `
       <div class="tv-head">
@@ -627,9 +647,9 @@ async function loadPFEpisodes(title, season) {
       btn.addEventListener('click', async () => {
         setFilesLoading('Files load ho rahi hain...');
         const tvPath = ep.path.replace(/^\//, '').split('/').map(decodeURIComponent).join('/');
-        const fd = await fetch(`/api/pf/files?tvPath=${encodeURIComponent(tvPath)}`).then(r => r.json()).catch(() => ({ files: [] }));
+        const { data: fd } = await getJSON(`/api/pf/files?tvPath=${encodeURIComponent(tvPath)}`).catch(() => ({ data: { files: [] } }));
         hideFilesLoading();
-        S.pfFiles = fd.files || [];
+        S.pfFiles = fd?.files || [];
         renderPFFilesWithBack(S.pfFiles, title, season);
       }, { passive: true });
       grid.appendChild(btn);
@@ -711,7 +731,9 @@ function openPFDownload(file) {
   $('dlCard').innerHTML = `
     <div class="dl-bar"></div>
     <div class="dl-header">
-      <div class="dl-icon">🎬</div>
+      ${S.movie?.poster
+        ? `<img class="dl-poster" src="${esc(S.movie.poster)}" alt="" onerror="this.outerHTML='<div class=&quot;dl-icon&quot;>🎬</div>'">`
+        : '<div class="dl-icon">🎬</div>'}
       <div class="dl-title">${esc(name)}</div>
     </div>
     <div class="dl-meta">
@@ -776,45 +798,9 @@ function generatePFLink(file, name) {
   }
 
   $('dlActions').classList.add('show');
-  startPFCountdown(file, $('expireRow'), name);
 }
 
-function startPFCountdown(file, el, name) {
-  // cancel any existing countdown on this element before starting fresh
-  if (el._stop) { el._stop(); el._stop = null; }
-
-  const end = Date.now() + 6 * 3600 * 1000;
-  let rafId;
-
-  function tick() {
-    const rem = Math.max(0, end - Date.now());
-    if (rem === 0) {
-      el.textContent = '❌ Link expire ho gaya — dobara generate karo';
-      el.style.color = 'var(--red)';
-      cancelAnimationFrame(rafId);
-      const btn = $('genBtn');
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = '🔄 Dobara Generate Karo';
-        $('dlActions').classList.remove('show');
-        btn.addEventListener('click', () => generatePFLink(file, name), { once: true });
-      }
-      return;
-    }
-    const h = Math.floor(rem / 3600000);
-    const m = Math.floor((rem % 3600000) / 60000);
-    const s = Math.floor((rem % 60000) / 1000);
-    el.textContent = h > 0
-      ? `⏱️ ${h}h ${m}m ${s}s baaki hai`
-      : `⏱️ ${m}m ${s}s baaki hai`;
-    rafId = requestAnimationFrame(tick);
-  }
-  tick();
-  el._stop = () => cancelAnimationFrame(rafId);
-}
-
-
-// 
+//
 
 function emptyHTML(title, sub) {
   return `<div class="state-wrap" style="display:flex">
@@ -881,10 +867,6 @@ function hideFilesLoading() { hideEl('filesLoading'); }
 
 // back from download screen
 function handleBackToFiles() {
-  // stop countdown if running (PF download screen stores _stop on expireRow)
-  const expRow = $('expireRow');
-  if (expRow?._stop) { expRow._stop(); expRow._stop = null; }
-
   show('files');
   if (!S.movie) { show('results'); return; }
 
@@ -1065,6 +1047,25 @@ document.addEventListener('DOMContentLoaded', () => {
   $('adminPassInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') submitAdminPass(); });
   $('adminOverlay')?.addEventListener('click', e => { if (e.target === $('adminOverlay')) closeAdmin(); }, { passive: true });
 
+  // hashchange — browser back button support
+  window.addEventListener('hashchange', () => {
+    const name = location.hash.replace('#', '') || 'hero';
+    if (SCREENS.includes(name) && name !== _currentScreen) show(name);
+  });
+
+  // nav search (visible on results screen)
+  $('navSearchInput')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { doSearch($('navSearchInput').value); $('navSearchInput').blur(); }
+  });
+
+  // empty state re-search
+  $('emptySearchBtn')?.addEventListener('click', () => doSearch($('emptySearchInput').value), { passive: true });
+  $('emptySearchInput')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') doSearch($('emptySearchInput').value);
+  });
+
+  // clean any stale hash on fresh load — always start at hero
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   show('hero');
   // Mobile pe keyboard auto-open nahi — sirf desktop pe focus
   if (!('ontouchstart' in window)) si.focus();

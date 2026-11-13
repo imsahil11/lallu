@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '7d', etag: true }));
 
 // log any API call slower than 3s (path only, no query string) so "why was it slow" has an answer in the logs
 app.use('/api', (req, res, next) => {
@@ -378,6 +378,24 @@ async function clearLogs() {
   }
 }
 
+async function loadWarmProxiesFromRedis() {
+  if (!process.env.UPSTASH_REDIS_REST_URL) return;
+  try {
+    const raw = await redisCmd('get', 'lallu:warm-proxies');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    const cutoff = Date.now() - 30 * 60_000;
+    data.forEach(([proxy, ts]) => { if (ts > cutoff) WARM_PROXIES.set(proxy, ts); });
+    if (WARM_PROXIES.size) console.log(`[warm] loaded ${WARM_PROXIES.size} warm proxies from redis`);
+  } catch {}
+}
+
+function persistWarmProxies() {
+  if (!process.env.UPSTASH_REDIS_REST_URL || !WARM_PROXIES.size) return;
+  const data = JSON.stringify([...WARM_PROXIES.entries()]);
+  redisCmd('setex', 'lallu:warm-proxies', '1800', data).catch(() => {});
+}
+
 
 // search - hits filmyfly's own search api (separate domain, domain-change proof)
 app.get('/api/search', async (req, res) => {
@@ -419,7 +437,7 @@ app.get('/api/search', async (req, res) => {
     }));
 
     const payload = { results, total: data.total || 0, pages: data.total_pages || 1 };
-    cacheSet(cKey, payload, 60_000);
+    cacheSet(cKey, payload, 300_000);
     res.json(payload);
   } catch (e) {
     console.error('[search]', e.message);
@@ -525,7 +543,7 @@ async function loadLinks(lmId) {
     const sizeM = html.match(/pt-fsize[^>]*>[\s\S]{0,30}?<span[^>]*>([^<]+)<\/span>/);
 
     const payload = { parts, size: sizeM ? sizeM[1].trim() : null };
-    cacheSet(cKey, payload, 120_000);
+    cacheSet(cKey, payload, 300_000);
     return payload;
   }
 }
@@ -566,7 +584,7 @@ const WARM_PROXIES = new Map();           // "ip:port" -> last time it actually 
 
 // proxy sources, newest/biggest first (v4 gives ~800 proxies, the old v2 only ~60)
 const PROXY_SOURCES = [
-  'https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=ipport&format=text&timeout=5000',
+  'https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=ipport&format=text&timeout=5000&ssl=true&anonymity=elite',
   'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=elite',
 ];
 
@@ -582,6 +600,7 @@ function getFreshProxies() {
         if (proxies.length > 0) {
           cachedProxies = proxies;
           lastProxyFetch = Date.now();
+          redisCmd('setex', 'lallu:proxies', '600', JSON.stringify(proxies)).catch(() => {});
           return;
         }
       } catch (e) { console.error('[proxies] fetch failed:', e.message); }
@@ -590,10 +609,24 @@ function getFreshProxies() {
   return _proxyRefresh;
 }
 
-// never block a user request on a stale list: empty -> wait (max 3s), stale -> refresh in background
+// never block a user request on a stale list: empty -> Redis check -> proxyscrape (max 3s), stale -> refresh bg
 async function ensureProxies() {
   const age = Date.now() - lastProxyFetch;
   if (!cachedProxies.length) {
+    if (process.env.UPSTASH_REDIS_REST_URL) {
+      try {
+        const raw = await redisCmd('get', 'lallu:proxies');
+        if (raw) {
+          const list = JSON.parse(raw);
+          if (Array.isArray(list) && list.length > 0) {
+            cachedProxies = list;
+            lastProxyFetch = Date.now();
+            getFreshProxies();  // background refresh
+            return;
+          }
+        }
+      } catch {}
+    }
     await Promise.race([getFreshProxies(), new Promise(r => setTimeout(r, 3_000))]);
   } else if (age > 10 * 60_000) {
     getFreshProxies();   // fire and forget
@@ -692,6 +725,16 @@ async function resolveFilesdlTarget(host, dltype, fid) {
   const key = `${host}/${dltype}`;
   const c   = FD_RESOLVED.get(key);
   if (c && Date.now() - c.ts < 10 * 60_000) return { host: c.host, path: `/${dltype}/${fid}` };
+
+  // Redis check — cold start pe FD_RESOLVED khali hoti hai
+  if (process.env.UPSTASH_REDIS_REST_URL) {
+    const rhost = await redisCmd('get', `lallu:fd:${host}:${dltype}`).catch(() => null);
+    if (rhost && typeof rhost === 'string') {
+      FD_RESOLVED.set(key, { host: rhost, ts: Date.now() });
+      return { host: rhost, path: `/${dltype}/${fid}` };
+    }
+  }
+
   let cur = host;
   try {
     for (let hop = 0; hop < 4; hop++) {
@@ -708,6 +751,7 @@ async function resolveFilesdlTarget(host, dltype, fid) {
       break;
     }
     FD_RESOLVED.set(key, { host: cur, ts: Date.now() });
+    redisCmd('setex', `lallu:fd:${host}:${dltype}`, '600', cur).catch(() => {});
   } catch { /* use last resolved host */ }
   return { host: cur, path: `/${dltype}/${fid}` };
 }
@@ -758,28 +802,26 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
 
   // --- Layer 2: CF Worker (same CF network = no challenge) ---
   const workerPromise = new Promise(async (resolve, reject) => {
-    for (const wh of [startHost]) {
-      try {
-        const targetUrl = `https://${wh}${targetPath}`;
-        const r = await fetch(
-          `${FD_WORKER}?url=${encodeURIComponent(targetUrl)}&mode=html`,
-          { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(7000) }
-        );
-        if (!r.ok) continue;
-        const html = await r.text();
-        if (looksLikeFilesdlPage(html)) { console.log(`[filesdl] worker ok: ${wh}`); return resolve(html); }
-      } catch { /* try next */ }
-    }
-    reject('worker: all hosts blocked');
+    try {
+      const targetUrl = `https://${startHost}${targetPath}`;
+      const r = await fetch(
+        `${FD_WORKER}?url=${encodeURIComponent(targetUrl)}&mode=html`,
+        { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(7000) }
+      );
+      if (!r.ok) return reject('worker: not ok');
+      const html = await r.text();
+      if (looksLikeFilesdlPage(html)) { console.log('[filesdl] worker ok'); return resolve(html); }
+      reject('worker: blocked');
+    } catch (e) { reject('worker: ' + e.message); }
   });
 
-  // --- Layer 3: Free proxy race (CONNECT tunnel, 15 proxies: recent winners first, rest shuffled) ---
-  // proxies only start after direct has had a ~1.2s head start (or has already failed), so in the normal
+  // --- Layer 3: Free proxy race (CONNECT tunnel, 10 proxies: recent winners first, rest shuffled) ---
+  // proxies only start after direct has had a ~0.8s head start (or has already failed), so in the normal
   // case no proxy sockets are opened at all. when anyone wins, every other socket is closed right away.
   let finished = false;
   const sockets = new Set(), proxyReqs = new Set();
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const headStart = Promise.race([sleep(1200), Promise.any(directPromises).catch(() => {})]);
+  const headStart = Promise.race([sleep(800), Promise.any(directPromises).catch(() => {})]);
   const targetP = resolveFilesdlTarget(startHost, dltype, fid);
 
   function proxyFetch(proxy, targetHost, reqPath, cookie) {
@@ -794,13 +836,14 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
         if (finished || res.statusCode !== 200) { socket.destroy(); return reject(); }
         const headers = { 'User-Agent': UA, 'Referer': 'https://linkmake.in/' };
         if (cookie) headers.Cookie = cookie;
+        const stallTimer = setTimeout(() => { socket.destroy(); reject('stall'); }, 4000);
         const req = https.get({ host: targetHost, socket, agent: false, path: reqPath, headers }, (res2) => {
           let data = '';
-          res2.on('data', d => data += d);
-          res2.on('error', () => { socket.destroy(); reject(); });
-          res2.on('end', () => { socket.destroy(); resolve({ status: res2.statusCode, data }); });
+          res2.on('data', d => { clearTimeout(stallTimer); data += d; });
+          res2.on('error', () => { clearTimeout(stallTimer); socket.destroy(); reject(); });
+          res2.on('end', () => { clearTimeout(stallTimer); socket.destroy(); resolve({ status: res2.statusCode, data }); });
         });
-        req.on('error', () => { socket.destroy(); reject(); });
+        req.on('error', () => { clearTimeout(stallTimer); socket.destroy(); reject(); });
       });
       proxyReq.on('error', reject);
       proxyReq.on('timeout', () => { proxyReq.destroy(); reject(); });
@@ -808,7 +851,7 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
     });
   }
 
-  const proxyPromises = pickProxies(15).map(proxy => (async () => {
+  const proxyPromises = pickProxies(10).map(proxy => (async () => {
     await headStart;
     if (finished) throw new Error('done');
     const { host: targetHost } = await targetP;
@@ -822,6 +865,7 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
     }
     if (looksLikeFilesdlPage(res.data)) {
       WARM_PROXIES.set(proxy, Date.now());
+      persistWarmProxies();
       return res.data;
     }
     WARM_PROXIES.delete(proxy);
@@ -882,7 +926,7 @@ app.get('/api/servers', async (req, res) => {
       console.warn(`[servers] ${dltype}/${fid}: ${payload.reason} (${anchors} button anchors)`);
     }
 
-    cacheSet(cKey, payload, payload.reason ? 5_000 : 30_000);
+    cacheSet(cKey, payload, payload.reason ? 5_000 : 300_000);
     res.json(payload);
   } catch (e) {
     console.error('[servers]', e.message);
@@ -997,7 +1041,7 @@ app.get('/api/pf/search', async (req, res) => {
       });
     }
     const payload = { results };
-    cacheSet(cKey, payload, 60_000);
+    cacheSet(cKey, payload, 300_000);
     res.json(payload);
   } catch (e) {
     console.error('[pf/search]', e.message);
@@ -1026,7 +1070,7 @@ app.get('/api/pf/files', async (req, res) => {
     const pm    = data.match(/image\.tmdb\.org\/t\/p\/w500([^"]+)/);
     const poster = pm ? `https://image.tmdb.org/t/p/w342${pm[1]}` : null;
     const payload = { files, poster, title: title || tvPath };
-    cacheSet(cKey, payload, 60_000);
+    cacheSet(cKey, payload, 300_000);
     res.json(payload);
   } catch (e) {
     console.error('[pf/files]', e.message);
@@ -1052,7 +1096,7 @@ app.get('/api/pf/seasons', async (req, res) => {
     }
     seasons.sort((a, b) => a - b);
     const payload = { seasons, title };
-    cacheSet(cKey, payload, 60_000);
+    cacheSet(cKey, payload, 300_000);
     res.json(payload);
   } catch (e) {
     console.error('[pf/seasons]', e.message);
@@ -1083,7 +1127,7 @@ app.get('/api/pf/episodes', async (req, res) => {
     const pm     = html.match(/image\.tmdb\.org\/t\/p\/w500([^"]+)/);
     const poster = pm ? `https://image.tmdb.org/t/p/w342${pm[1]}` : null;
     const payload = { buttons: unique, poster, title, season: parseInt(season) };
-    cacheSet(cKey, payload, 60_000);
+    cacheSet(cKey, payload, 300_000);
     res.json(payload);
   } catch (e) {
     console.error('[pf/episodes]', e.message);
@@ -1143,11 +1187,13 @@ app.use((err, req, res, next) => {   // eslint-disable-line no-unused-vars
 process.on('unhandledRejection', e => console.error('[unhandledRejection]', e && e.message || e));
 process.on('uncaughtException',  e => console.error('[uncaughtException]',  e && e.message || e));
 
+// warm caches on startup — runs on Vercel too (require.main === module is false there)
+activeDomain().catch(e => console.error('[domain]', e.message));
+getFreshProxies().catch(() => {});
+loadWarmProxiesFromRedis().catch(() => {});
+
 if (require.main === module) {
-  // warm domain cache on startup + auto-refresh every 55 mins (errors are logged, never thrown)
-  const warmDomain = () => activeDomain().catch(e => console.error('[domain]', e.message));
-  warmDomain();
-  setInterval(warmDomain, 55 * 60 * 1000);
+  setInterval(() => activeDomain().catch(e => console.error('[domain]', e.message)), 55 * 60 * 1000);
   app.listen(PORT, () => console.log(`lallu → http://localhost:${PORT}`));
 }
 module.exports = app;
