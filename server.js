@@ -4,6 +4,7 @@ const cors    = require('cors');
 const path    = require('path');
 const http    = require('http');
 const https   = require('https');
+const crypto  = require('crypto');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -660,26 +661,55 @@ function parseServersHtml(html) {
 // result is cached per host+type; on any failure we fall back to the host the page gave us.
 const FD_HOST_OK = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.filesdl\.[a-z]{2,}$/i;
 
+// NginxAuth AES-CBC challenge solver for new8.filesdl.top /drive/ pages.
+// The 202 response contains a small inline <script> that:
+//   var a = toNumbers("hex...")   ← AES key
+//   var b = toNumbers("hex...")   ← IV
+//   var c = toNumbers("hex...")   ← ciphertext
+//   document.cookie = "NAME=" + toHex(slowAES.decrypt(c, 2, a, b)) + "; path=/"
+//   location.href = "http://host/drive/FID?d=1"
+// We replicate the AES-CBC decrypt in Node's built-in crypto and return the cookie string.
+function parseDriveChallenge(html) {
+  // grab the three hex strings in order: a (key), b (iv), c (ciphertext)
+  const nums = [...html.matchAll(/toNumbers\("([0-9a-fA-F]+)"\)/gi)].map(m => Buffer.from(m[1], 'hex'));
+  // cookie name e.g. "vDDoS-0a"
+  const nameM = html.match(/document\.cookie\s*=\s*["']([^=]+)=/);
+  // redirect path after solving e.g. "/drive/FID?d=1"
+  const hrefM = html.match(/location\.href\s*=\s*["']https?:\/\/[^/]+([^"']+)["']/);
+  if (nums.length < 3 || !nameM) return null;
+  try {
+    const [key, iv, ciphertext] = nums;   // a, b, c
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+    decipher.setAutoPadding(false);
+    const dec = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    // toHex() — lowercase hex of each byte
+    const hexVal = dec.toString('hex');
+    return { cookie: `${nameM[1]}=${hexVal}`, nextPath: hrefM ? hrefM[1] : null };
+  } catch { return null; }
+}
+
 async function resolveFilesdlTarget(host, dltype, fid) {
   const key = `${host}/${dltype}`;
   const c   = FD_RESOLVED.get(key);
   if (c && Date.now() - c.ts < 10 * 60_000) return { host: c.host, path: `/${dltype}/${fid}` };
+  let cur = host;
   try {
-    const r = await fetch(`https://${host}/${dltype}/${fid}`, {
-      redirect: 'manual', headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(2500),
-    });
-    const loc = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
-    if (loc) {
-      const u = new URL(loc, `https://${host}`);
-      if (FD_HOST_OK.test(u.hostname)) {
-        FD_RESOLVED.set(key, { host: u.hostname, ts: Date.now() });
-        return { host: u.hostname, path: `/${dltype}/${fid}` };
+    for (let hop = 0; hop < 4; hop++) {
+      const r = await fetch(`https://${cur}/${dltype}/${fid}`, {
+        redirect: 'manual', headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(2000),
+      });
+      const loc = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+      if (loc) {
+        const u = new URL(loc, `https://${cur}`);
+        if (!FD_HOST_OK.test(u.hostname)) break;
+        cur = u.hostname;
+        continue;
       }
-    } else if (r.status === 200) {
-      FD_RESOLVED.set(key, { host, ts: Date.now() });
+      break;
     }
-  } catch { /* use original host */ }
-  return { host, path: `/${dltype}/${fid}` };
+    FD_RESOLVED.set(key, { host: cur, ts: Date.now() });
+  } catch { /* use last resolved host */ }
+  return { host: cur, path: `/${dltype}/${fid}` };
 }
 
 async function fetchFilesdlHtml(dltype, fid, linkHost) {
@@ -688,7 +718,7 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
 
   await ensureProxies();   // never blocks on a stale list (refreshes in background)
 
-  // --- Layer 1: Direct fetch ---
+  // --- Layer 1: Direct fetch (with AES challenge solver for /drive/ pages) ---
   const directHosts = [startHost];
 
   const directPromises = directHosts.map(h => new Promise(async (resolve, reject) => {
@@ -697,7 +727,30 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
         headers: { 'User-Agent': UA, 'Referer': 'https://linkmake.in/' },
         signal: AbortSignal.timeout(5000)
       });
-      const html = await r.text();
+      let html = await r.text();
+
+      // 202 = NginxAuth AES challenge (drive pages on new8). solve it inline.
+      if (r.status === 202 && html.includes('slowAES')) {
+        const solved = parseDriveChallenge(html);
+        if (solved) {
+          // use the final redirected host (e.g. new8.filesdl.top) so the Cookie header isn't lost on redirect
+          let finalHost = h;
+          try {
+            const u = new URL(r.url);
+            if (FD_HOST_OK.test(u.hostname)) finalHost = u.hostname;
+          } catch {}
+          console.log(`[filesdl] drive challenge detected on ${finalHost}, solving...`);
+          const retryPath = solved.nextPath || targetPath;
+          const r2 = await fetch(`https://${finalHost}${retryPath}`, {
+            headers: { 'User-Agent': UA, 'Referer': r.url || 'https://linkmake.in/', 'Cookie': solved.cookie },
+            signal: AbortSignal.timeout(6000),
+          });
+          html = await r2.text();
+          if (looksLikeFilesdlPage(html)) { console.log(`[filesdl] drive challenge solved: ${finalHost}`); resolve(html); return; }
+        }
+        reject(`challenge unsolved: ${h}`); return;
+      }
+
       if (looksLikeFilesdlPage(html)) { console.log(`[filesdl] direct ok: ${h}`); resolve(html); }
       else reject(`CF blocked: ${h}`);
     } catch { reject(`direct error: ${h}`); }
@@ -729,37 +782,51 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
   const headStart = Promise.race([sleep(1200), Promise.any(directPromises).catch(() => {})]);
   const targetP = resolveFilesdlTarget(startHost, dltype, fid);
 
-  const proxyPromises = pickProxies(15).map(proxy => new Promise(async (resolve, reject) => {
-    await headStart;
-    if (finished) return reject();
-    const { host: targetHost } = await targetP;
-    if (finished) return reject();
-    const [host, port] = proxy.split(':');
-    const proxyReq = http.request({ host, port, method: 'CONNECT', path: `${targetHost}:443`, timeout: 3500 });
-    proxyReqs.add(proxyReq);
-    proxyReq.on('connect', (res, socket) => {
-      sockets.add(socket);
-      socket.on('error', () => { socket.destroy(); reject(); });
-      if (finished || res.statusCode !== 200) { socket.destroy(); return reject(); }
-      const req = https.get({
-        host: targetHost, socket, agent: false, path: targetPath,
-        headers: { 'User-Agent': UA, 'Referer': 'https://linkmake.in/' }
-      }, (res2) => {
-        let data = '';
-        res2.on('data', d => data += d);
-        res2.on('error', () => { socket.destroy(); reject(); });
-        res2.on('end', () => {
-          socket.destroy();
-          if (looksLikeFilesdlPage(data)) { WARM_PROXIES.set(proxy, Date.now()); resolve(data); }
-          else { WARM_PROXIES.delete(proxy); reject('CF blocked proxy'); }
+  function proxyFetch(proxy, targetHost, reqPath, cookie) {
+    return new Promise((resolve, reject) => {
+      if (finished) return reject();
+      const [host, port] = proxy.split(':');
+      const proxyReq = http.request({ host, port, method: 'CONNECT', path: `${targetHost}:443`, timeout: 3500 });
+      proxyReqs.add(proxyReq);
+      proxyReq.on('connect', (res, socket) => {
+        sockets.add(socket);
+        socket.on('error', () => { socket.destroy(); reject(); });
+        if (finished || res.statusCode !== 200) { socket.destroy(); return reject(); }
+        const headers = { 'User-Agent': UA, 'Referer': 'https://linkmake.in/' };
+        if (cookie) headers.Cookie = cookie;
+        const req = https.get({ host: targetHost, socket, agent: false, path: reqPath, headers }, (res2) => {
+          let data = '';
+          res2.on('data', d => data += d);
+          res2.on('error', () => { socket.destroy(); reject(); });
+          res2.on('end', () => { socket.destroy(); resolve({ status: res2.statusCode, data }); });
         });
+        req.on('error', () => { socket.destroy(); reject(); });
       });
-      req.on('error', () => { socket.destroy(); reject(); });
+      proxyReq.on('error', reject);
+      proxyReq.on('timeout', () => { proxyReq.destroy(); reject(); });
+      proxyReq.end();
     });
-    proxyReq.on('error', reject);
-    proxyReq.on('timeout', () => { proxyReq.destroy(); reject(); });
-    proxyReq.end();
-  }));
+  }
+
+  const proxyPromises = pickProxies(15).map(proxy => (async () => {
+    await headStart;
+    if (finished) throw new Error('done');
+    const { host: targetHost } = await targetP;
+    let res = await proxyFetch(proxy, targetHost, targetPath);
+    // if proxy hits the NginxAuth AES challenge (202 + slowAES), solve and retry via the same proxy IP
+    if (res.status === 202 && res.data.includes('slowAES')) {
+      const solved = parseDriveChallenge(res.data);
+      if (solved) {
+        res = await proxyFetch(proxy, targetHost, solved.nextPath || targetPath, solved.cookie);
+      }
+    }
+    if (looksLikeFilesdlPage(res.data)) {
+      WARM_PROXIES.set(proxy, Date.now());
+      return res.data;
+    }
+    WARM_PROXIES.delete(proxy);
+    throw new Error('CF blocked proxy');
+  })());
 
   // vercel free tier 10s limit; saare layers ek saath race mein
   let timer;
@@ -784,15 +851,6 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
 app.get('/api/servers', async (req, res) => {
   const { dltype, fid } = req.query;
   if (!['cloud', 'drive'].includes(dltype) || !fid) return res.status(400).json({ error: 'bad params' });
-
-  // "drive" pages sit behind a Cloudflare challenge meant for real browsers, so the server does not
-  // fetch them at all: hand back the filesdl page itself and let the user open it in their own browser.
-  // (the link's own host redirects to the right server, so nothing about new6/new8 is hardcoded)
-  if (dltype === 'drive') {
-    const h = FD_HOSTS.get(fid);
-    const host = FD_HOST_OK.test(h || '') ? h : DEFAULT_FD_HOST;
-    return res.json({ cloud: null, fffast: null, reason: 'external', fallbackUrl: `https://${host}/drive/${encodeURIComponent(fid)}` });
-  }
 
   const cKey = `servers:${dltype}:${fid}`;
   const hit  = cacheGet(cKey);

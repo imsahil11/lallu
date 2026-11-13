@@ -420,7 +420,6 @@ function makeQualityCard(link) {
       <div class="file-name">${esc(qual)}</div>
       <div class="file-tags">
         <span class="tag tag-s">💾 ${esc(size)}</span>
-        ${link.dltype === 'drive' ? '<span class="tag tag-ext">🔗 Alag page · ads aa sakte hain</span>' : ''}
       </div>
     </div>
     <div class="file-arrow">›</div>`;
@@ -464,38 +463,6 @@ function openFFDownload(link) {
         </div>
       </div>
     </div>`;
-
-  // drive type ka JS challenge sirf real browser solve kar sakta hai —
-  // seedha filesdl page link de do (server fetch nahi karta). host link se aata hai (redirect khud sahi
-  // server par le jaata hai), koi new8 hardcode nahi.
-  if (link.dltype === 'drive') {
-    const dhost = /^[a-z0-9.-]+\.filesdl\.[a-z]+$/i.test(link.host || '') ? link.host : 'new1.filesdl.in';
-    const driveUrl = `https://${dhost}/drive/${encodeURIComponent(link.fid)}`;
-    $('ffServersWrap').innerHTML = `
-      <div class="dl-action-card">
-        <div class="dl-action-top">
-          <div class="dl-action-ico">🚗</div>
-          <div class="dl-action-info">
-            <div class="dl-action-title">Drive Download</div>
-            <div class="dl-action-sub">Page khulega → Download button dabao</div>
-          </div>
-          <div class="dl-action-btns">
-            <button class="btn-copy" id="copyDrive">📋 Copy</button>
-          </div>
-        </div>
-        <a class="btn-dl" href="${esc(driveUrl)}" target="_blank" rel="noopener noreferrer">🔗 Drive Page Kholo</a>
-        <p style="font-size:12px;opacity:.7;margin:10px 2px 0;line-height:1.5">
-          Page khulne par pehle chhota verification aa sakta hai, phir download button dabao.
-          Popup / ad khule to use band kar do (kisi ad par "Allow" mat dabana).
-          Ad-blocker ya Brave browser use karoge to popups kam aayenge.
-        </p>
-      </div>`;
-    $('ffServersWrap').querySelector('#copyDrive')
-      ?.addEventListener('click', () => {
-        navigator.clipboard.writeText(driveUrl).then(() => toast('📋 Drive link copy ho gaya!')).catch(() => {});
-      }, { passive: true });
-    return;
-  }
 
   // Only real failures (network error, timeout, 5xx) are retried automatically, once. A clean answer of
   // "blocked / not offered / format changed" is final — retrying it just made users wait twice as long.
@@ -881,11 +848,11 @@ async function getJSON(url, ms = 12000) {
   } finally { clearTimeout(t); }
 }
 
-// links for the first couple of direct (cloud) qualities are fetched quietly as soon as the list shows,
+// links for the first couple of qualities are fetched quietly as soon as the list shows,
 // so by the time the user taps one the answer is usually already there (kept in memory ~25s only).
 const PREFETCH = new Map();
 function prefetchServers(links) {
-  links.filter(l => l.dltype !== 'drive').slice(0, 2).forEach(l => {
+  links.slice(0, 2).forEach(l => {
     const hit = PREFETCH.get(l.fid);
     if (hit && Date.now() - hit.t < 25_000) return;
     PREFETCH.set(l.fid, {
