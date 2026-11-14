@@ -918,14 +918,15 @@ app.get('/api/servers', async (req, res) => {
 
     const { fffast: rawFffast, cloud: rawCloud, anchors } = parseServersHtml(html);
 
-    // Quick HEAD check on fffast — if 502/down, skip it so cloud becomes the recommended option.
-    // Runs in ~100ms when fffast is healthy; uses full 1.5s timeout only when actually down.
+    // Quick HEAD check on fffast — detects 502 Bad Gateway (file server down).
+    // 500ms cap: 502 responses come back in ~50-150ms so this is reliable.
+    // On timeout or non-5xx error: keep fffast (conservative — don't penalise slow connections).
     let fffast = rawFffast;
     if (rawFffast) {
       try {
-        const r = await fetch(rawFffast, { method: 'HEAD', signal: AbortSignal.timeout(1500), redirect: 'follow' });
-        if (!r.ok) { fffast = null; console.log(`[servers] fffast down (${r.status}) for ${dltype}/${fid}`); }
-      } catch { fffast = null; console.log(`[servers] fffast timeout for ${dltype}/${fid}`); }
+        const r = await fetch(rawFffast, { method: 'HEAD', signal: AbortSignal.timeout(500), redirect: 'follow' });
+        if (r.status === 502 || r.status === 503) { fffast = null; console.log(`[servers] fffast down (${r.status}) for ${dltype}/${fid}`); }
+      } catch { /* timeout or unreachable — treat fffast as healthy */ }
     }
 
     let cloudUrl = null;
@@ -943,9 +944,7 @@ app.get('/api/servers', async (req, res) => {
       console.warn(`[servers] ${dltype}/${fid}: ${payload.reason} (${anchors} button anchors)`);
     }
 
-    // Shorter TTL when fffast is down but cloud is present — recovers sooner if fffast comes back
-    const ttl = payload.reason ? 5_000 : (fffast ? 300_000 : 60_000);
-    cacheSet(cKey, payload, ttl);
+    cacheSet(cKey, payload, payload.reason ? 5_000 : 3_600_000);
     res.json(payload);
   } catch (e) {
     console.error('[servers]', e.message);

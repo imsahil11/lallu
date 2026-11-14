@@ -498,7 +498,7 @@ function openFFDownload(link) {
   const fetchServers = async (attempt = 0) => {
     let r = null;
     const pre = attempt === 0 ? PREFETCH.get(myLink.fid) : null;
-    if (pre && Date.now() - pre.t < 25_000) r = await pre.p;        // usually already finished
+    if (pre && Date.now() - pre.t < 300_000) r = await pre.p;       // use prefetch if within 5 min
     if (!r || !r.ok || !r.data) {
       PREFETCH.delete(myLink.fid);
       try { r = await getJSON(`/api/servers?dltype=${encodeURIComponent(myLink.dltype)}&fid=${encodeURIComponent(myLink.fid)}`); }
@@ -850,13 +850,13 @@ async function getJSON(url, ms = 12000) {
   } finally { clearTimeout(t); }
 }
 
-// links for the first couple of qualities are fetched quietly as soon as the list shows,
-// so by the time the user taps one the answer is usually already there (kept in memory ~25s only).
+// all qualities are prefetched quietly as soon as the list shows,
+// so by the time the user taps one the answer is usually already there (cached 5 min).
 const PREFETCH = new Map();
 function prefetchServers(links) {
-  links.slice(0, 2).forEach(l => {
+  links.forEach(l => {
     const hit = PREFETCH.get(l.fid);
-    if (hit && Date.now() - hit.t < 25_000) return;
+    if (hit && Date.now() - hit.t < 300_000) return;
     PREFETCH.set(l.fid, {
       t: Date.now(),
       p: getJSON(`/api/servers?dltype=${encodeURIComponent(l.dltype)}&fid=${encodeURIComponent(l.fid)}`).catch(() => null),
