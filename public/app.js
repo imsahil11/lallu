@@ -49,16 +49,26 @@ function fetchClientHints() {
     try {
       if (!navigator.userAgentData) return;
       const h = await navigator.userAgentData.getHighEntropyValues(['platform', 'platformVersion', 'mobile', 'model']);
-      _clientHints = { platform: h.platform || null, platformVersion: h.platformVersion || null, mobile: h.mobile ?? false, model: h.model || null };
+      _clientHints = {
+        platform: h.platform || null, platformVersion: h.platformVersion || null, mobile: h.mobile ?? false, model: h.model || null,
+        brands: (navigator.userAgentData.brands || []).map(b => b.brand),
+      };
     } catch {}
   })();
+}
+
+// screen facts for the admin panel: iPhone family guess (Apple hides the model) and iPad-vs-Mac
+function deviceEnv() {
+  try {
+    return { sw: screen.width, sh: screen.height, dpr: window.devicePixelRatio || 1, tp: navigator.maxTouchPoints || 0 };
+  } catch { return null; }
 }
 
 function track(action, data = {}) {
   const fire = () => fetch('/api/track', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, data, uid: UID, clientHints: _clientHints }),
+    body: JSON.stringify({ action, data, uid: UID, clientHints: _clientHints, env: deviceEnv() }),
     keepalive: true,
   }).catch(() => {});
   if (_hintsPromise && !_clientHints) {
@@ -128,7 +138,7 @@ function show(name) {
   if (homeBtn) homeBtn.style.display = name === 'hero' ? 'none' : 'flex';
   // admin gear only on the homepage — it just overlaps content everywhere else
   const fab = $('adminFab');
-  if (fab) fab.style.display = name === 'hero' ? 'flex' : 'none';
+  if (fab) fab.style.display = (name === 'hero' || name === 'results') ? 'flex' : 'none';
   // nav search: visible only on results screen
   const navSearch = $('navSearch');
   if (navSearch) navSearch.style.display = name === 'results' ? 'flex' : 'none';
@@ -431,7 +441,7 @@ function appendQualityCards(list, links) {
   const ordered = [...links.filter(l => l.dltype !== 'drive'), ...links.filter(l => l.dltype === 'drive')];
   ordered.forEach(link => frag.appendChild(makeQualityCard(link)));
   list.appendChild(frag);
-  prefetchServers(ordered);   // warm up the first two direct qualities while the user is still choosing
+  prefetchServers(ordered.filter(l => l.dltype !== 'drive'));   // cloud links only — drive links are heavy (22 proxies), prefetch only on click
 }
 
 // filmyfly cards (filename nahi hota isliye quality dikhao)
@@ -453,7 +463,8 @@ function makeQualityCard(link) {
 
   card.addEventListener('click', () => {
     S.activeLink = link;
-    track('download_click', { title: S.movie?.title, quality: qual, size, source: 'Server 1' });
+    const _pt = (S.parts.length > 1 && S.activePart != null) ? (S.parts[S.activePart]?.label || null) : null;
+    track('download_click', { title: S.movie?.title, quality: qual, size, source: 'Server 1', ...(_pt ? { part: _pt } : {}) });
     openFFDownload(link);
   }, { passive: true });
   return card;
@@ -491,10 +502,11 @@ function openFFDownload(link) {
       </div>
     </div>`;
 
-  // Only real failures (network error, timeout, 5xx) are retried automatically, once. A clean answer of
-  // "blocked / not offered / format changed" is final — retrying it just made users wait twice as long.
   const wrap = $('ffServersWrap');
   const myLink = link;
+  // blocked = server busy (CF/proxy race lost). auto-retry silently up to 4 times (1.5s gap).
+  // user just sees spinner the whole time; manual retry only appears if all 4 fail.
+  const MAX_BLOCKED = 4;
   const fetchServers = async (attempt = 0) => {
     let r = null;
     const pre = attempt === 0 ? PREFETCH.get(myLink.fid) : null;
@@ -504,15 +516,26 @@ function openFFDownload(link) {
       try { r = await getJSON(`/api/servers?dltype=${encodeURIComponent(myLink.dltype)}&fid=${encodeURIComponent(myLink.fid)}`); }
       catch { r = null; }
     }
-    if (S.activeLink !== myLink) return;                            // user already went back / picked another one
+    if (S.activeLink !== myLink) return;                            // user went back / picked another one
+
+    // blocked = all proxy layers failed; server now returns this uncached so each retry is a real attempt
+    if (r?.ok && r.data?.reason === 'blocked' && attempt < MAX_BLOCKED - 1) {
+      const p = wrap.querySelector('p');
+      if (p) p.textContent = `Link dhoondh rahe hain... (${attempt + 2}/${MAX_BLOCKED})`;
+      await new Promise(res => setTimeout(res, 1500));
+      if (S.activeLink !== myLink) return;
+      return fetchServers(attempt + 1);
+    }
+
     if (r && r.ok && r.data) return renderFFServerButtons(r.data, title, qual, size, () => { PREFETCH.delete(myLink.fid); show1(); });
+    // network/timeout failure — one silent retry, then manual button
     if (attempt < 1) return fetchServers(1);
     track('server_error', { title, qual, reason: 'timeout' });
     showRetry(wrap, 'Server links nahi mile', 'Connection ya server slow hai', () => { PREFETCH.delete(myLink.fid); show1(); });
   };
   const show1 = () => {
     wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="spinner"></div><p>Servers dhoondh rahe hain...</p></div>`;
-    const slow = setTimeout(() => { const p = wrap.querySelector('p'); if (p) p.textContent = 'Thoda time lag raha hai, ruko...'; }, 4000);
+    const slow = setTimeout(() => { const p = wrap.querySelector('p'); if (p && !p.textContent.includes('/')) p.textContent = 'Thoda time lag raha hai, ruko...'; }, 4000);
     fetchServers(0).finally(() => clearTimeout(slow));
   };
   fetchServers(0);
@@ -527,8 +550,9 @@ function renderFFServerButtons(data, title, qual, size, onRetry) {
       not_offered:    'Is quality ke liye Fast/Cloud server nahi hai, dusri quality try karo',
       format_changed: 'Site ka format badal gaya lagta hai, developer ko batao',
     };
-    // "blocked" is usually temporary, so offer a manual retry; the others will not change by retrying
+    // "blocked" after exhausting all auto-retries — show manual retry with explanation
     if (data.reason === 'blocked' && onRetry) { track('server_error', { title, qual, reason: 'blocked' }); showRetry(wrap, 'Server abhi busy hai', msgs.blocked, onRetry); return; }
+    // "blocked" without onRetry (shouldn't happen) — fall through to generic message
     track('server_error', { title, qual, reason: data.reason || 'no_server' });
     wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="state-icon">😕</div><p>${esc(msgs[data.reason] || 'Koi server available nahi hai abhi')}</p></div>`;
     return;
@@ -787,7 +811,7 @@ function generatePFLink(file, name) {
   btn.disabled = true;
   btn.textContent = '✅ Link Ready!';
 
-  track('download_click', {
+  track('link_generate', {
     title: file.name || file.caption,
     quality: file.quality,
     size: fmtSize(file.size),
@@ -944,7 +968,7 @@ async function submitAdminPass() {
       _adminPass = pass;
       hideEl('adminAuth');
       showEl('adminLogs', 'flex');
-      renderAdminLogs(data.logs || [], data.stats || {});
+      renderAdminLogs(data.logs || [], data.stats || {}, data.users || {});
     }
   } catch { $('adminPassErr').textContent = '❌ Server error, try again'; }
   finally { btn.disabled = false; btn.textContent = 'Unlock →'; }
@@ -958,62 +982,169 @@ async function clearAdminLogs() {
   try {
     const res = await fetch('/api/admin/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: _adminPass }) });
     const data = await res.json();
-    if (data.ok) await submitAdminPass(); // refresh — renderAdminLogs button chhupa dega
+    if (data.ok) await refreshAdmin(); // refresh — renderAdminLogs button chhupa dega
   } catch {}
   btn.textContent = '🗑️ Clear';
 }
 
 const ACTION_LABEL = {
-  search: '🔍 Search', movie_click: '🎬 Movie Clicked', part_click: '📁 Part Clicked',
-  download_click: '⬇️ Download', download_start: '🚀 Download Started',
+  visit: '👋 Site kholi', search: '🔍 Search', movie_click: '🎬 Movie Clicked', part_click: '📁 Part Clicked',
+  download_click: '⬇️ Quality Chuna', download_start: '🚀 Download Shuru',
+  link_generate: '🔗 Link Banaya',
   link_copy: '📋 Copied', link_share: '📤 Shared', server_error: '❌ Error',
 };
 
-function relTime(ts) {
+function fmtTime(ts) {
   if (!ts) return '';
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  const d   = new Date(ts);
+  const now = new Date();
+  const isSameDay  = d.toDateString() === now.toDateString();
+  const yesterday  = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const isYesterday = d.toDateString() === yesterday.toDateString();
+  const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+  if (isSameDay)    return time;
+  if (isYesterday)  return `Kal ${time}`;
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + ', ' + time;
 }
 
 let _adminTab = 'all';
 let _adminLogs = [];
+let _adminUsers = {};        // uid -> { device, os, browser, name, num, first, last }
+let _adminUserFilter = null; // uid to filter logs by, or null = show all
 
 function buildLogEntry(log) {
   const d = log.data || {};
   let detail = '';
   if (d.query) detail = `"${d.query}"`;
-  else if (d.title && d.quality) detail = `${d.title} · ${d.quality}`;
+  else if (d.title && d.quality) detail = `${d.title} · ${d.quality}${d.part ? ` · ${d.part}` : ''}`;
   else if (d.title) detail = d.title;
   else if (d.part)  detail = d.part;
-  const shortUid = log.uid ? log.uid.substring(0, 8) : null;
+  const u     = (log.uid && _adminUsers[log.uid]) || null;
+  const model = log.device || 'Unknown';
+  const label = u?.name || (u?.num ? `${model} #${u.num}` : model);
+  const icon  = log.kind === 'pc' ? '💻' : log.kind === 'tablet' ? '📟' : '📱';
+  const meta  = [u?.name ? model : null, log.os, log.browser].filter(Boolean).join(' · ');
   const src = d.source ? ` <span class="admin-log-src">${esc(d.source)}</span>` : '';
+  const isActive = _adminUserFilter === log.uid;
   const cls = ['download_click','download_start'].includes(log.action) ? ' entry-download'
              : log.action === 'server_error' ? ' entry-error'
              : ['link_copy','link_share'].includes(log.action) ? ' entry-copy' : '';
   const entry = document.createElement('div');
-  entry.className = `admin-log-entry${cls}`;
+  entry.className = `admin-log-entry${cls}${isActive ? ' entry-focused' : ''}`;
   entry.innerHTML = `
     <div class="admin-log-row1">
-      <span class="admin-log-device">📱 ${esc(log.device || 'Unknown')}</span>
-      <span class="admin-log-time">${relTime(log.ts)}</span>
+      <span class="admin-log-device${log.uid ? ' can-filter' : ''}" ${log.uid ? `data-uid="${esc(log.uid)}" title="Filter karo"` : ''}>
+        ${log.uid ? `<span class="admin-log-dot" style="background:${uidColor(log.uid)}"></span>` : ''}${icon} ${esc(label)}
+      </span>
+      <span class="admin-log-time">${fmtTime(log.ts)}</span>
     </div>
-    <div class="admin-log-action">${ACTION_LABEL[log.action] || log.action}${detail ? ` — <span class="admin-log-movie">${esc(detail)}</span>` : ''}${src}</div>
-    <div class="admin-log-meta">${esc(log.os)} · ${esc(log.browser)}</div>
-    ${shortUid ? `<span class="admin-log-uid">uid: ${esc(shortUid)}</span>` : ''}`;
+    <div class="admin-log-action">${ACTION_LABEL[log.action] || esc(log.action)}${detail ? ` — <span class="admin-log-movie">${esc(detail)}</span>` : ''}${src}</div>
+    ${meta ? `<div class="admin-log-meta">${esc(meta)}</div>` : ''}`;
   return entry;
+}
+
+// every friend keeps one fixed colour, so two same-model phones are easy to tell apart at a glance
+function uidColor(uid) {
+  let h = 0;
+  for (let i = 0; i < uid.length; i++) h = (h * 31 + uid.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 75% 60%)`;
+}
+
+async function refreshAdmin() {
+  if (!_adminPass) return;
+  try {
+    const res  = await fetch('/api/admin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: _adminPass }) });
+    const data = await res.json();
+    if (data.ok) renderAdminLogs(data.logs || [], data.stats || {}, data.users || {});
+  } catch {}
+}
+
+async function renameFriend(uid, u) {
+  if (!_adminPass) return;
+  if (!u) { toast('❌ User nahi mila'); return; }
+  const name = prompt(`${u.device}${u.num ? ` #${u.num}` : ''} — naam do (khaali = naam hatao)`, u.name || '');
+  if (name === null) return;
+  try {
+    const res  = await fetch('/api/admin/name', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: _adminPass, uid, name }) });
+    const data = await res.json();
+    if (data.ok) { await refreshAdmin(); toast(name.trim() ? '✅ Naam save ho gaya' : '🗑️ Naam hata diya'); }
+    else toast('❌ Naam save nahi hua');
+  } catch { toast('❌ Naam save nahi hua'); }
+}
+
+function renderFriendsTab(users) {
+  const listEl = $('adminLogList');
+  const sortedUsers = Object.entries(users).sort((a, b) => (b[1].last || 0) - (a[1].last || 0));
+  if (!sortedUsers.length) {
+    listEl.innerHTML = `<div class="admin-empty">📭 Koi friend abhi tak nahi aaya</div>`;
+    return;
+  }
+  const dlByUid = {};
+  _adminLogs.forEach(l => { if (l.uid && l.action === 'download_start') dlByUid[l.uid] = (dlByUid[l.uid] || 0) + 1; });
+
+  const frag = document.createDocumentFragment();
+  sortedUsers.forEach(([uid, u]) => {
+    const icon  = u.kind === 'pc' ? '💻' : u.kind === 'tablet' ? '📟' : '📱';
+    const label = u.name || (u.num ? `${u.device} #${u.num}` : u.device);
+    const dls   = dlByUid[uid] || 0;
+    const card  = document.createElement('div');
+    card.className = 'admin-friend-card';
+    card.innerHTML = `
+      <div class="admin-friend-top">
+        <span class="admin-log-dot" style="background:${uidColor(uid)}"></span>
+        <span class="admin-friend-name">${icon} ${esc(label)}</span>
+        <button class="admin-friend-rename" data-uid="${esc(uid)}" title="Naam do">✏️</button>
+      </div>
+      <div class="admin-friend-meta">${esc([u.os, u.browser].filter(Boolean).join(' · '))}</div>
+      <div class="admin-friend-stats">
+        <span>📊 ${u.events || 0}</span>
+        <span>🚀 ${dls}</span>
+        <span>🕐 ${fmtTime(u.last)}</span>
+      </div>`;
+    card.querySelector('.admin-friend-rename').addEventListener('click', e => { e.stopPropagation(); renameFriend(uid, u); });
+    card.addEventListener('click', () => {
+      _adminTab = 'all';
+      _adminUserFilter = uid;
+      $('adminTabs')?.querySelectorAll('.admin-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === 'all'));
+      renderFilteredLogs();
+    });
+    frag.appendChild(card);
+  });
+  listEl.innerHTML = '';
+  listEl.appendChild(frag);
 }
 
 function renderFilteredLogs() {
   const listEl = $('adminLogList');
-  const filtered = _adminTab === 'downloads' ? _adminLogs.filter(l => ['download_click','download_start'].includes(l.action))
-                 : _adminTab === 'errors'    ? _adminLogs.filter(l => l.action === 'server_error')
-                 : _adminTab === 'copies'    ? _adminLogs.filter(l => ['link_copy','link_share'].includes(l.action))
-                 : _adminLogs;
+
+  // Friends tab has its own render
+  if (_adminTab === 'friends') { renderFriendsTab(_adminUsers); return; }
+
+  let filtered = _adminTab === 'downloads' ? _adminLogs.filter(l => l.action === 'download_start')
+               : _adminTab === 'errors'    ? _adminLogs.filter(l => l.action === 'server_error')
+               : _adminTab === 'copies'    ? _adminLogs.filter(l => ['link_copy','link_share'].includes(l.action))
+               : _adminLogs;
+  if (_adminUserFilter) filtered = filtered.filter(l => l.uid === _adminUserFilter);
+
+  // Filter bar — show/update/remove
+  let filterBar = $('adminFilterBar');
+  if (_adminUserFilter) {
+    const u = _adminUsers[_adminUserFilter];
+    const lbl = u?.name || (u?.num ? `${u.device} #${u.num}` : u?.device) || '—';
+    if (!filterBar) {
+      filterBar = document.createElement('div');
+      filterBar.id = 'adminFilterBar';
+      filterBar.className = 'admin-filter-bar';
+      listEl.parentNode.insertBefore(filterBar, listEl);
+    }
+    filterBar.innerHTML = `🔍 <strong>${esc(lbl)}</strong> <button class="admin-filter-clear" id="adminFilterClear">✕ Clear</button>`;
+    $('adminFilterClear')?.addEventListener('click', () => { _adminUserFilter = null; renderFilteredLogs(); });
+  } else {
+    if (filterBar) { filterBar.remove(); }
+  }
+
   if (!filtered.length) {
-    listEl.innerHTML = `<div class="admin-empty">📭 ${_adminTab === 'all' ? 'Abhi tak koi activity nahi' : 'Is filter mein kuch nahi'}</div>`;
+    listEl.innerHTML = `<div class="admin-empty">📭 ${_adminTab === 'all' && !_adminUserFilter ? 'Abhi tak koi activity nahi' : 'Yahan kuch nahi'}</div>`;
     return;
   }
   const frag = document.createDocumentFragment();
@@ -1022,46 +1153,70 @@ function renderFilteredLogs() {
   listEl.appendChild(frag);
 }
 
-function renderAdminLogs(logs, stats) {
-  _adminLogs = logs;
+function renderAdminLogs(logs, stats, users = {}) {
+  _adminLogs  = logs;
+  _adminUsers = users;
+
   const statsEl  = $('adminStats');
   const listEl   = $('adminLogList');
   const clearBtn = $('adminClearBtn');
 
   if (clearBtn) clearBtn.style.display = logs.length ? 'block' : 'none';
 
-  const downloads = logs.filter(l => ['download_click','download_start'].includes(l.action)).length;
+  // Fix: downloads = only download_start (not clicks)
+  const downloads = logs.filter(l => l.action === 'download_start').length;
   const errors    = logs.filter(l => l.action === 'server_error').length;
-  const uids      = new Set(logs.map(l => l.uid).filter(Boolean)).size;
+  const copies    = logs.filter(l => ['link_copy','link_share'].includes(l.action)).length;
+  const friendCnt = Object.keys(users).length || new Set(logs.map(l => l.uid).filter(Boolean)).size || stats.uniqueUsers || 0;
 
   statsEl.innerHTML = `
     <div class="admin-stat"><span class="admin-stat-n">${logs.length}</span><span class="admin-stat-l">Events</span></div>
-    <div class="admin-stat"><span class="admin-stat-n">${uids || stats.uniqueUsers || 0}</span><span class="admin-stat-l">Friends</span></div>
+    <div class="admin-stat"><span class="admin-stat-n">${friendCnt}</span><span class="admin-stat-l">Friends</span></div>
     <div class="admin-stat"><span class="admin-stat-n">${downloads}</span><span class="admin-stat-l">Downloads</span></div>
-    <div class="admin-stat"><span class="admin-stat-n">${errors}</span><span class="admin-stat-l">Errors</span></div>`;
+    <div class="admin-stat"><span class="admin-stat-n">${errors}</span><span class="admin-stat-l">Errors</span></div>
+    <button class="admin-refresh-btn" id="adminRefreshBtn" title="Refresh">🔄</button>`;
+
+  $('adminRefreshBtn')?.addEventListener('click', async () => {
+    const btn = $('adminRefreshBtn');
+    if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+    await refreshAdmin();
+  });
+
+  const makeTabLabel = (tab) => {
+    if (tab === 'all')       return `All ${logs.length}`;
+    if (tab === 'downloads') return downloads ? `⬇️ ${downloads}` : '⬇️';
+    if (tab === 'errors')    return errors    ? `❌ ${errors}`    : '❌';
+    if (tab === 'copies')    return copies    ? `📋 ${copies}`    : '📋';
+    if (tab === 'friends')   return `👥 ${friendCnt}`;
+    return tab;
+  };
 
   if (!$('adminTabs')) {
     const tabsEl = document.createElement('div');
     tabsEl.id = 'adminTabs';
     tabsEl.className = 'admin-tabs';
-    tabsEl.innerHTML = `
-      <button class="admin-tab active" data-tab="all">All</button>
-      <button class="admin-tab" data-tab="downloads">⬇️</button>
-      <button class="admin-tab" data-tab="errors">❌${errors ? ` ${errors}` : ''}</button>
-      <button class="admin-tab" data-tab="copies">📋</button>`;
+    ['all','downloads','errors','copies','friends'].forEach(tab => {
+      const btn = document.createElement('button');
+      btn.className = `admin-tab${tab === _adminTab ? ' active' : ''}`;
+      btn.dataset.tab = tab;
+      btn.textContent = makeTabLabel(tab);
+      tabsEl.appendChild(btn);
+    });
     listEl.parentNode.insertBefore(tabsEl, listEl);
     tabsEl.addEventListener('click', e => {
       const btn = e.target.closest('[data-tab]');
       if (!btn) return;
       _adminTab = btn.dataset.tab;
+      _adminUserFilter = null;
       tabsEl.querySelectorAll('.admin-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === _adminTab));
       renderFilteredLogs();
     });
   } else {
     const tabsEl = $('adminTabs');
-    tabsEl.querySelectorAll('.admin-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === _adminTab));
-    const errBtn = tabsEl.querySelector('[data-tab="errors"]');
-    if (errBtn) errBtn.textContent = `❌${errors ? ` ${errors}` : ''}`;
+    tabsEl.querySelectorAll('.admin-tab').forEach(b => {
+      b.classList.toggle('active', b.dataset.tab === _adminTab);
+      b.textContent = makeTabLabel(b.dataset.tab);
+    });
   }
 
   renderFilteredLogs();
@@ -1072,6 +1227,10 @@ function renderAdminLogs(logs, stats) {
 
 document.addEventListener('DOMContentLoaded', () => {
   fetchClientHints();
+  // once per tab session, so a friend shows up in the admin panel as soon as they open the site
+  try {
+    if (!sessionStorage.getItem('lallu_visit')) { sessionStorage.setItem('lallu_visit', '1'); track('visit'); }
+  } catch { track('visit'); }
 
   const si = $('searchInput');
   const sb = $('searchBtn');
@@ -1122,6 +1281,13 @@ document.addEventListener('DOMContentLoaded', () => {
   $('adminClearBtn')?.addEventListener('click', clearAdminLogs, { passive: true });
   $('adminPassInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') submitAdminPass(); });
   $('adminOverlay')?.addEventListener('click', e => { if (e.target === $('adminOverlay')) closeAdmin(); }, { passive: true });
+  $('adminLogList')?.addEventListener('click', e => {
+    const el = e.target.closest('.admin-log-device[data-uid]');
+    if (!el) return;
+    const uid = el.dataset.uid;
+    _adminUserFilter = _adminUserFilter === uid ? null : uid;
+    renderFilteredLogs();
+  });
 
   // hashchange — browser back button support
   window.addEventListener('hashchange', () => {

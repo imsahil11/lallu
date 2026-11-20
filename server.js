@@ -5,6 +5,7 @@ const path    = require('path');
 const http    = require('http');
 const https   = require('https');
 const crypto  = require('crypto');
+const { describe: describeDevice } = require('./device');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -123,9 +124,8 @@ let _domainP  = null;   // in-flight refresh, shared by concurrent callers
 
 async function probeDomain(d) {
   try {
-    const r = await fetch(`${d}/rss.xml`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(4_000) });
-    if (!r.ok) return false;
-    return /<rss/i.test((await r.text()).slice(0, 500));
+    const r = await fetch(`${d}/`, { method: 'HEAD', headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(2_000) });
+    return r.ok || r.status === 301 || r.status === 302 || r.status === 403;
   } catch { return false; }
 }
 
@@ -237,79 +237,6 @@ function parseLinkmakePage(html) {
   return nonEmpty.length ? nonEmpty : parts;
 }
 
-// ua parser — reads device/os/browser from user-agent header
-function parseUA(ua = '') {
-  let device = 'Unknown', os = 'Unknown', browser = 'Unknown';
-
-  if (/Windows NT 10/i.test(ua))        os = 'Windows 10/11';
-  else if (/Windows NT 6\.3/i.test(ua)) os = 'Windows 8.1';
-  else if (/Windows/i.test(ua))         os = 'Windows';
-  else if (/Android/i.test(ua)) {
-    const v = (ua.match(/Android ([\d.]+)/i) || [])[1] || '';
-    os = `Android ${v}`.trim();
-  } else if (/iPhone OS/i.test(ua)) {
-    const v = ((ua.match(/iPhone OS ([\d_]+)/i) || [])[1] || '').replace(/_/g, '.');
-    os = `iOS ${v}`.trim();
-  } else if (/iPad/i.test(ua))    os = 'iPadOS';
-  else if (/Mac OS X/i.test(ua))  os = 'macOS';
-  else if (/Linux/i.test(ua))     os = 'Linux';
-
-  if (/Android/i.test(ua)) {
-    const pixel = (ua.match(/Pixel ([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-    if (pixel)              device = `Google Pixel ${pixel.trim()}`;
-    else if (/Redmi/i.test(ua)) {
-      const mo = (ua.match(/Redmi\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Redmi ${mo.trim()}` : 'Xiaomi Redmi';
-    } else if (/POCO/i.test(ua)) {
-      const mo = (ua.match(/POCO\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `POCO ${mo.trim()}` : 'POCO';
-    } else if (/\bXiaomi\b/i.test(ua)) {
-      const mo = (ua.match(/Xiaomi\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Xiaomi ${mo.trim()}` : 'Xiaomi';
-    } else if (/SM-([A-Z0-9]+)/i.test(ua)) {
-      const code = (ua.match(/SM-([A-Z0-9]+)/i) || [])[1] || '';
-      const ser  = { A:'Galaxy A', G:'Galaxy S', S:'Galaxy S Ultra', M:'Galaxy M', F:'Galaxy Z', N:'Galaxy Note', J:'Galaxy J', T:'Galaxy Tab' };
-      device = `Samsung ${ser[code[0]] || 'Galaxy'} (SM-${code})`;
-    } else if (/OnePlus|ONEPLUS/i.test(ua)) {
-      const mo = (ua.match(/(?:OnePlus|ONEPLUS)\s?([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `OnePlus ${mo.trim()}` : 'OnePlus';
-    } else if (/vivo/i.test(ua)) {
-      const mo = (ua.match(/vivo\s+([\w]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Vivo ${mo.trim()}` : 'Vivo';
-    } else if (/OPPO/i.test(ua)) {
-      const mo = (ua.match(/OPPO\s+([\w]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `OPPO ${mo.trim()}` : 'OPPO';
-    } else if (/realme/i.test(ua)) {
-      const mo = (ua.match(/realme\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Realme ${mo.trim()}` : 'Realme';
-    } else if (/motorola|moto/i.test(ua)) {
-      const mo = (ua.match(/(?:motorola|moto)\s+([\w\s]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Motorola ${mo.trim()}` : 'Motorola';
-    } else if (/Infinix/i.test(ua)) {
-      const mo = (ua.match(/Infinix\s+([\w\s-]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Infinix ${mo.trim()}` : 'Infinix';
-    } else if (/TECNO/i.test(ua)) {
-      const mo = (ua.match(/TECNO\s+([\w\s-]+?)(?:\s+Build|\))/i) || [])[1];
-      device = mo ? `Tecno ${mo.trim()}` : 'Tecno';
-    } else device = 'Android Phone';
-  } else if (/iPhone/i.test(ua))  device = `iPhone (${os})`;
-  else if (/iPad/i.test(ua))      device = 'iPad';
-  else if (/Windows/i.test(ua))   device = 'Windows PC';
-  else if (/Mac/i.test(ua))       device = 'Mac';
-  else if (/Linux/i.test(ua))     device = 'Linux PC';
-
-  if (/EdgA?\//.test(ua))              browser = 'Edge';
-  else if (/OPR\//.test(ua))           browser = 'Opera';
-  else if (/SamsungBrowser/.test(ua))  browser = 'Samsung Browser';
-  else if (/FBAN|FBIOS/.test(ua))      browser = 'Facebook App';
-  else if (/Instagram/.test(ua))       browser = 'Instagram';
-  else if (/Chrome\/([\d]+)/i.test(ua))   browser = `Chrome ${(ua.match(/Chrome\/([\d]+)/i) || [])[1]}`;
-  else if (/Firefox\/([\d]+)/i.test(ua))  browser = `Firefox ${(ua.match(/Firefox\/([\d]+)/i) || [])[1]}`;
-  else if (/Safari/.test(ua))          browser = 'Safari';
-
-  return { device, os, browser };
-}
-
 function istTime() {
   return new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
@@ -349,14 +276,99 @@ async function redisPipeline(cmds) {
   } catch { return null; }
 }
 
+// user registry — lives outside the 1000-event log window so "#1 / #2" numbering and nicknames stay stable
+//   lallu:ufirst  uid -> first-seen ts        lallu:udev  uid -> last raw device info (json)
+//   lallu:unames  uid -> nickname given in the admin panel
+const MEM_USERS = { first: {}, dev: {}, names: {} };
+
 async function saveLog(entry) {
   const str = JSON.stringify(entry);
+  const dev = entry.uid ? JSON.stringify({ ua: entry.ua, h: entry.h, e: entry.e, ts: entry.ts }) : null;
   if (process.env.UPSTASH_REDIS_REST_URL) {
-    await redisPipeline([['LPUSH', 'lallu:logs', str], ['LTRIM', 'lallu:logs', '0', '999']]);
+    const cmds = [['LPUSH', 'lallu:logs', str], ['LTRIM', 'lallu:logs', '0', '999']];
+    if (dev) cmds.push(['HSETNX', 'lallu:ufirst', entry.uid, String(entry.ts)], ['HSET', 'lallu:udev', entry.uid, dev]);
+    await redisPipeline(cmds);
   } else {
     MEM_LOGS.unshift(entry);
     if (MEM_LOGS.length > 1000) MEM_LOGS.pop();
+    if (dev) {
+      if (!MEM_USERS.first[entry.uid]) MEM_USERS.first[entry.uid] = String(entry.ts);
+      MEM_USERS.dev[entry.uid] = dev;
+    }
   }
+}
+
+// upstash returns HGETALL as a flat [k, v, k, v...] array
+function hashToObj(r) {
+  if (!r) return {};
+  if (!Array.isArray(r)) return typeof r === 'object' ? r : {};
+  const o = {};
+  for (let i = 0; i + 1 < r.length; i += 2) o[r[i]] = r[i + 1];
+  return o;
+}
+
+async function getUsers() {
+  if (!process.env.UPSTASH_REDIS_REST_URL) return MEM_USERS;
+  const r = await redisPipeline([['HGETALL', 'lallu:ufirst'], ['HGETALL', 'lallu:udev'], ['HGETALL', 'lallu:unames']]);
+  const at = i => hashToObj(Array.isArray(r) ? r[i]?.result : null);
+  return { first: at(0), dev: at(1), names: at(2) };
+}
+
+async function setUserName(uid, name) {
+  if (process.env.UPSTASH_REDIS_REST_URL) {
+    await (name ? redisCmd('hset', 'lallu:unames', uid, name) : redisCmd('hdel', 'lallu:unames', uid));
+  } else if (name) MEM_USERS.names[uid] = name;
+  else delete MEM_USERS.names[uid];
+}
+
+// logs + registry -> what the admin panel shows. device names are resolved HERE (not when the event
+// is saved), so improving the device list fixes already-stored events too.
+function buildAdminView(logs, reg) {
+  const memo = new Map();
+  const resolve = (x) => {
+    if (!x || !x.ua) return null;
+    const k = `${x.ua}|${x.h?.model || ''}|${x.h?.platformVersion || ''}|${x.e?.sw || ''}x${x.e?.sh || ''}|${x.e?.tp || ''}`;
+    if (!memo.has(k)) memo.set(k, describeDevice(x.ua, x.h, x.e));
+    return memo.get(k);
+  };
+
+  const users = {};
+  const outLogs = logs.map(l => {
+    // events saved before this change have no raw data — keep whatever was stored with them
+    const d = resolve(l) || { device: l.device || 'Unknown', os: l.os || '', browser: l.browser || '', kind: l.mobile === false ? 'pc' : 'phone' };
+    if (l.uid) {
+      const u = users[l.uid] || (users[l.uid] = { ...d, first: l.ts, last: l.ts, events: 0 });
+      u.events++;
+      if (l.ts < u.first) u.first = l.ts;
+      if (l.ts > u.last)  u.last  = l.ts;
+    }
+    return { ts: l.ts, uid: l.uid || null, action: l.action, data: l.data || {}, ...d };
+  });
+
+  // registry knows users whose events already fell out of the log window, and the true first-seen time
+  for (const [uid, raw] of Object.entries(reg.dev || {})) {
+    let x = null;
+    try { x = JSON.parse(raw); } catch { /* ignore bad row */ }
+    const d = resolve(x);
+    if (!d) continue;
+    users[uid] = { first: x.ts, last: x.ts, events: 0, ...users[uid], ...d };
+    if (x.ts > users[uid].last) users[uid].last = x.ts;
+  }
+  for (const [uid, u] of Object.entries(users)) {
+    const f = parseInt(reg.first?.[uid], 10);
+    if (f && f < u.first) u.first = f;
+    u.name = reg.names?.[uid] || null;
+    u.num  = 0;
+  }
+
+  // same model used by more than one person -> "#1", "#2"... in the order they first showed up
+  const byDevice = {};
+  for (const [uid, u] of Object.entries(users)) (byDevice[u.device] = byDevice[u.device] || []).push(uid);
+  for (const uids of Object.values(byDevice)) {
+    if (uids.length < 2) continue;
+    uids.sort((a, b) => users[a].first - users[b].first).forEach((uid, i) => { users[uid].num = i + 1; });
+  }
+  return { logs: outLogs, users };
 }
 
 async function getLogs(limit = 200) {
@@ -384,7 +396,7 @@ async function loadWarmProxiesFromRedis() {
     const raw = await redisCmd('get', 'lallu:warm-proxies');
     if (!raw) return;
     const data = JSON.parse(raw);
-    const cutoff = Date.now() - 30 * 60_000;
+    const cutoff = Date.now() - 60 * 60_000;  // use max TTL (drive proxies stay warm 60 min)
     data.forEach(([proxy, ts]) => { if (ts > cutoff) WARM_PROXIES.set(proxy, ts); });
     if (WARM_PROXIES.size) console.log(`[warm] loaded ${WARM_PROXIES.size} warm proxies from redis`);
   } catch {}
@@ -540,7 +552,7 @@ async function loadLinks(lmId) {
         return cloudOnly.length ? { ...p, links: cloudOnly } : p;
       });
     }
-    const sizeM = html.match(/pt-fsize[^>]*>[\s\S]{0,30}?<span[^>]*>([^<]+)<\/span>/);
+    const sizeM = html.match(/pt-fsize[^>]*>[\s\S]{0,80}?<span[^>]*>([^<]+)<\/span>/);
 
     const payload = { parts, size: sizeM ? sizeM[1].trim() : null };
     cacheSet(cKey, payload, 300_000);
@@ -610,7 +622,7 @@ function getFreshProxies() {
 }
 
 // never block a user request on a stale list: empty -> Redis check -> proxyscrape (max 3s), stale -> refresh bg
-async function ensureProxies() {
+async function ensureProxies(maxWait = 3_000) {
   const age = Date.now() - lastProxyFetch;
   if (!cachedProxies.length) {
     if (process.env.UPSTASH_REDIS_REST_URL) {
@@ -627,17 +639,20 @@ async function ensureProxies() {
         }
       } catch {}
     }
-    await Promise.race([getFreshProxies(), new Promise(r => setTimeout(r, 3_000))]);
+    await Promise.race([getFreshProxies(), new Promise(r => setTimeout(r, maxWait))]);
   } else if (age > 10 * 60_000) {
     getFreshProxies();   // fire and forget
   }
 }
 
 // proxies to try this round: recent winners first, then random others (shuffled so we don't hammer the same ones)
-function pickProxies(n = 15) {
+// drive pages sit behind a stricter CF+NginxAuth wall, so they get more proxies and a longer warm-proxy window
+function pickProxies(n = 15, isDrive = false) {
+  const warmTtl  = isDrive ? 60 * 60_000 : 30 * 60_000;   // drive: 60 min, cloud: 30 min
+  const warmCap  = isDrive ? 12 : 6;
   const warm = [...WARM_PROXIES.entries()]
-    .filter(([, t]) => Date.now() - t < 30 * 60_000)
-    .sort((a, b) => b[1] - a[1]).slice(0, 6).map(([p]) => p);
+    .filter(([, t]) => Date.now() - t < warmTtl)
+    .sort((a, b) => b[1] - a[1]).slice(0, warmCap).map(([p]) => p);
   const rest = cachedProxies.filter(p => !warm.includes(p));
   for (let i = rest.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -766,7 +781,8 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
   const startHost   = FD_HOST_OK.test(linkHost || '') ? linkHost : DEFAULT_FD_HOST;
   const targetPath  = `/${dltype}/${fid}`;
 
-  await ensureProxies();   // never blocks on a stale list (refreshes in background)
+  const isDrive = dltype === 'drive';
+  await ensureProxies(isDrive ? 5_000 : 3_000);   // drive gets extra wait — CF+NginxAuth needs more proxies
 
   // --- Layer 1: Direct fetch (with AES challenge solver for /drive/ pages) ---
   const directHosts = [startHost];
@@ -857,7 +873,7 @@ async function fetchFilesdlHtml(dltype, fid, linkHost) {
     });
   }
 
-  const proxyPromises = pickProxies(10).map(proxy => (async () => {
+  const proxyPromises = pickProxies(isDrive ? 22 : 12, isDrive).map(proxy => (async () => {
     await headStart;
     if (finished) throw new Error('done');
     const { host: targetHost } = await targetP;
@@ -932,7 +948,9 @@ app.get('/api/servers', async (req, res) => {
     let cloudUrl = null;
     if (rawCloud) {
       const token  = Math.floor(1000000000 + Math.random() * 9000000000);
-      const rawUrl = rawCloud + (rawCloud.includes('?') ? '&' : '?') + 'token=' + token;
+      // strip any existing token= (page-rendered placeholder) before adding our own, same as filesdl's page JS does
+      const base   = rawCloud.replace(/([?&])token=[^&]*/g, '').replace(/[?&]$/, '');
+      const rawUrl = base + (base.includes('?') ? '&' : '?') + 'token=' + token;
       cloudUrl = `${FD_WORKER}?s=${encodeURIComponent(WORKER_SECRET)}&url=${encodeURIComponent(rawUrl)}`;
     }
 
@@ -944,7 +962,8 @@ app.get('/api/servers', async (req, res) => {
       console.warn(`[servers] ${dltype}/${fid}: ${payload.reason} (${anchors} button anchors)`);
     }
 
-    cacheSet(cKey, payload, payload.reason ? 5_000 : 3_600_000);
+    // blocked / no-server results are NOT cached — next request gets a fresh attempt right away
+    if (!payload.reason) cacheSet(cKey, payload, 3_600_000);
     res.json(payload);
   } catch (e) {
     console.error('[servers]', e.message);
@@ -959,39 +978,32 @@ app.get('/api/servers', async (req, res) => {
 app.post('/api/track', async (req, res) => {
   try {
     const ua = req.headers['user-agent'] || '';
-    const { action, data, uid, clientHints } = req.body || {};
+    const { action, data, uid, clientHints, env } = req.body || {};
     if (!action) return res.json({ ok: false });
 
-    const { device, os, browser } = parseUA(ua);
-    
     // Ignore crawler bots to keep logs clean
-    if (/bot|googlebot|crawler|spider|robot|crawling/i.test(ua)) return res.json({ ok: true });
+    if (/bot\b|googlebot|crawler|spider|crawling/i.test(ua)) return res.json({ ok: true });
 
-    // Intelligently merge Client Hints for exact model names
-    let finalDevice = device;
-    if (clientHints?.model) {
-      if (device === 'Android Phone' || device === 'Unknown') {
-        finalDevice = `Android (${clientHints.model})`;
-      } else if (!device.includes(clientHints.model)) {
-        finalDevice = `${device} (${clientHints.model})`;
-      }
-    }
-
-    let finalOs = os;
-    if (clientHints?.platformVersion && os === 'Windows 10/11') {
-      const major = parseInt((clientHints.platformVersion || '').split('.')[0], 10);
-      finalOs = major >= 13 ? 'Windows 11' : 'Windows 10';
-    }
+    // only the raw facts are stored; the readable name is worked out when the admin panel opens
+    const clip = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : null);
+    const num  = (v, max) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= max ? n : null; };
+    const ch   = clientHints && typeof clientHints === 'object' ? clientHints : null;
+    const ev   = env && typeof env === 'object' ? env : null;
+    const safeData = data && typeof data === 'object' && JSON.stringify(data).length <= 1500 ? data : {};
 
     await saveLog({
       time   : istTime(),
       ts     : Date.now(),
-      uid    : uid || null,
-      device : finalDevice,
-      os: finalOs, browser,
-      mobile : clientHints?.mobile ?? /Mobile/i.test(ua),
-      action,
-      data   : data || {},
+      uid    : clip(uid, 64),
+      ua     : ua.slice(0, 400),
+      h      : ch ? {
+        platform: clip(ch.platform, 30), platformVersion: clip(ch.platformVersion, 20),
+        model: clip(ch.model, 60), mobile: typeof ch.mobile === 'boolean' ? ch.mobile : null,
+        brands: Array.isArray(ch.brands) ? ch.brands.slice(0, 6).map(b => clip(b, 30)).filter(Boolean) : [],
+      } : null,
+      e      : ev ? { sw: num(ev.sw, 10000), sh: num(ev.sh, 10000), dpr: num(ev.dpr, 10), tp: num(ev.tp, 20) } : null,
+      action : String(action).slice(0, 40),
+      data   : safeData,
     });
     res.json({ ok: true });
   } catch { res.json({ ok: false }); }
@@ -1014,10 +1026,25 @@ app.post('/api/admin', async (req, res) => {
   const { password } = req.body || {};
   if (!adminAuth(password, res)) return;
   try {
-    const logs  = await getLogs(1000);
+    const [rawLogs, reg] = await Promise.all([getLogs(1000), getUsers()]);
+    const { logs, users } = buildAdminView(rawLogs, reg || {});
     const uuids = new Set(logs.map(l => l.uid).filter(Boolean));
-    res.json({ ok: true, logs, stats: { uniqueUsers: uuids.size } });
-  } catch { res.json({ ok: false, error: 'Failed to fetch logs' }); }
+    res.json({ ok: true, logs, users, stats: { uniqueUsers: uuids.size } });
+  } catch (e) {
+    console.error('[admin]', e.message);
+    res.json({ ok: false, error: 'Failed to fetch logs' });
+  }
+});
+
+// give a device a nickname ("Rahul"); empty name removes it
+app.post('/api/admin/name', async (req, res) => {
+  const { password, uid, name } = req.body || {};
+  if (!adminAuth(password, res)) return;
+  if (typeof uid !== 'string' || !uid || uid.length > 64) return res.status(400).json({ ok: false, error: 'bad uid' });
+  try {
+    await setUserName(uid, String(name || '').trim().slice(0, 40));
+    res.json({ ok: true });
+  } catch { res.json({ ok: false, error: 'Failed to save name' }); }
 });
 
 app.post('/api/admin/clear', async (req, res) => {
@@ -1167,6 +1194,19 @@ app.get('/api/latest', async (req, res) => {
   const cKey = 'latest:ff';
   const hit  = cacheGet(cKey);
   if (hit) return res.json(hit);
+
+  // cold start pe redis me cached hoga — fresh fetch nahi karni padegi
+  if (process.env.UPSTASH_REDIS_REST_URL) {
+    try {
+      const raw = await redisCmd('get', 'lallu:latest');
+      if (raw) {
+        const p = JSON.parse(raw);
+        cacheSet(cKey, p, 15 * 60_000);
+        return res.json(p);
+      }
+    } catch {}
+  }
+
   try {
     const r = await fetch(
       'https://webfind.filmyflydla.space/latest',
@@ -1179,6 +1219,7 @@ app.get('/api/latest', async (req, res) => {
     }));
     const payload = { items };
     cacheSet(cKey, payload, 15 * 60_000);
+    if (process.env.UPSTASH_REDIS_REST_URL) redisCmd('setex', 'lallu:latest', '900', JSON.stringify(payload)).catch(() => {});
     res.json(payload);
   } catch (e) {
     res.json({ items: [] });

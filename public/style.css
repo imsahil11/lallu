@@ -1016,6 +1016,7 @@ img { display: block; max-width: 100%; }
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -1064,6 +1065,14 @@ img { display: block; max-width: 100%; }
   margin-bottom: 4px;
 }
 .admin-log-device { font-weight: 700; color: var(--text); font-size: 0.78rem; }
+.admin-log-device.can-name { cursor: pointer; }
+.admin-log-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
 .admin-log-time   { color: var(--text-3); font-size: 0.68rem; white-space: nowrap; }
 .admin-log-action { color: var(--amber); font-size: 0.74rem; }
 .admin-log-meta   { color: var(--text-3); font-size: 0.7rem; margin-top: 2px; word-break: break-word; }
@@ -1107,6 +1116,91 @@ img { display: block; max-width: 100%; }
 .admin-log-entry.entry-download { border-left: 3px solid rgba(56,189,248,0.5); }
 .admin-log-entry.entry-error    { border-left: 3px solid rgba(239,68,68,0.5); }
 .admin-log-entry.entry-copy     { border-left: 3px solid rgba(52,211,153,0.4); }
+.admin-log-device.can-filter { cursor: pointer; }
+.admin-log-device.can-filter:hover { color: var(--amber); }
+.admin-log-entry.entry-focused { border-color: rgba(232,160,32,0.4); background: rgba(232,160,32,0.04); }
+
+/* Refresh button in stats bar */
+.admin-refresh-btn {
+  margin-left: auto;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: border-color var(--t), color var(--t);
+  align-self: center;
+}
+.admin-refresh-btn:hover { border-color: var(--border-h); color: var(--text); }
+.admin-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Filter bar */
+.admin-filter-bar {
+  margin: 6px 12px 0;
+  padding: 7px 12px;
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-bdr);
+  border-radius: var(--r-sm);
+  font-size: 0.75rem;
+  color: var(--amber);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.admin-filter-clear {
+  margin-left: auto;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--amber-bdr);
+  border-radius: 50px;
+  color: var(--amber);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: background var(--t);
+}
+.admin-filter-clear:hover { background: var(--amber-bg); }
+
+/* Friends tab */
+.admin-friend-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t);
+}
+.admin-friend-card:hover { border-color: var(--border-h); background: var(--raised); }
+.admin-friend-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.admin-friend-name { font-size: 0.82rem; font-weight: 700; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-friend-rename {
+  padding: 2px 7px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  font-size: 0.72rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color var(--t), color var(--t);
+}
+.admin-friend-rename:hover { border-color: var(--border-h); color: var(--text); }
+.admin-friend-meta { font-size: 0.7rem; color: var(--text-3); margin-bottom: 6px; }
+.admin-friend-stats {
+  display: flex;
+  gap: 10px;
+  font-size: 0.7rem;
+  color: var(--text-2);
+}
+.admin-friend-stats span { white-space: nowrap; }
+
 .admin-log-movie { color: var(--text-2); }
 .admin-log-src {
   display: inline-block;
