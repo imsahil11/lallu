@@ -1117,16 +1117,7 @@ function renderFriendsTab(users) {
 function renderFilteredLogs() {
   const listEl = $('adminLogList');
 
-  // Friends tab has its own render
-  if (_adminTab === 'friends') { renderFriendsTab(_adminUsers); return; }
-
-  let filtered = _adminTab === 'downloads' ? _adminLogs.filter(l => l.action === 'download_start')
-               : _adminTab === 'errors'    ? _adminLogs.filter(l => l.action === 'server_error')
-               : _adminTab === 'copies'    ? _adminLogs.filter(l => ['link_copy','link_share'].includes(l.action))
-               : _adminLogs;
-  if (_adminUserFilter) filtered = filtered.filter(l => l.uid === _adminUserFilter);
-
-  // Filter bar — show/update/remove
+  // Filter bar — always reconcile before any early return
   let filterBar = $('adminFilterBar');
   if (_adminUserFilter) {
     const u = _adminUsers[_adminUserFilter];
@@ -1140,8 +1131,17 @@ function renderFilteredLogs() {
     filterBar.innerHTML = `🔍 <strong>${esc(lbl)}</strong> <button class="admin-filter-clear" id="adminFilterClear">✕ Clear</button>`;
     $('adminFilterClear')?.addEventListener('click', () => { _adminUserFilter = null; renderFilteredLogs(); });
   } else {
-    if (filterBar) { filterBar.remove(); }
+    if (filterBar) filterBar.remove();
   }
+
+  // Friends tab has its own render
+  if (_adminTab === 'friends') { renderFriendsTab(_adminUsers); return; }
+
+  let filtered = _adminTab === 'downloads' ? _adminLogs.filter(l => l.action === 'download_start')
+               : _adminTab === 'errors'    ? _adminLogs.filter(l => l.action === 'server_error')
+               : _adminTab === 'copies'    ? _adminLogs.filter(l => ['link_copy','link_share'].includes(l.action))
+               : _adminLogs;
+  if (_adminUserFilter) filtered = filtered.filter(l => l.uid === _adminUserFilter);
 
   if (!filtered.length) {
     listEl.innerHTML = `<div class="admin-empty">📭 ${_adminTab === 'all' && !_adminUserFilter ? 'Abhi tak koi activity nahi' : 'Yahan kuch nahi'}</div>`;
@@ -1315,12 +1315,16 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── Latest chips for trending section ────────────────
-function loadLatestChips() {
+function loadLatestChips(attempt) {
+  attempt = attempt || 1;
   fetch('/api/latest', { signal: AbortSignal.timeout(8000) })
     .then(r => r.json())
     .then(data => {
       const items = data.items || [];
-      if (!items.length) return;
+      if (!items.length) {
+        if (attempt < 3) setTimeout(() => loadLatestChips(attempt + 1), attempt * 4000);
+        return;
+      }
       const wrap = $('trendingChips');
       if (!wrap) return;
       const frag = document.createDocumentFragment();
@@ -1336,6 +1340,6 @@ function loadLatestChips() {
       if (outer) outer.hidden = false;
       updateChipsHint();
     })
-    .catch(() => {});
+    .catch(() => { if (attempt < 3) setTimeout(() => loadLatestChips(attempt + 1), attempt * 4000); });
 }
 
