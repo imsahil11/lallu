@@ -384,9 +384,10 @@ async function getLogs(limit = 200) {
 
 async function clearLogs() {
   if (process.env.UPSTASH_REDIS_REST_URL) {
-    await redisCmd('del', 'lallu:logs');
+    await redisPipeline([['DEL', 'lallu:logs'], ['DEL', 'lallu:ufirst'], ['DEL', 'lallu:udev'], ['DEL', 'lallu:unames']]);
   } else {
     MEM_LOGS.length = 0;
+    MEM_USERS.first = {}; MEM_USERS.dev = {}; MEM_USERS.names = {};
   }
 }
 
