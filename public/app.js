@@ -504,39 +504,36 @@ function openFFDownload(link) {
 
   const wrap = $('ffServersWrap');
   const myLink = link;
-  // blocked = server busy (CF/proxy race lost). auto-retry silently up to 4 times (1.5s gap).
-  // user just sees spinner the whole time; manual retry only appears if all 4 fail.
-  const MAX_BLOCKED = 4;
   const fetchServers = async (attempt = 0) => {
     let r = null;
     const pre = attempt === 0 ? PREFETCH.get(myLink.fid) : null;
-    if (pre && Date.now() - pre.t < 300_000) r = await pre.p;       // use prefetch if within 5 min
+    if (pre && Date.now() - pre.t < 300_000) r = await pre.p;
     if (!r || !r.ok || !r.data) {
       PREFETCH.delete(myLink.fid);
       try { r = await getJSON(`/api/servers?dltype=${encodeURIComponent(myLink.dltype)}&fid=${encodeURIComponent(myLink.fid)}`); }
       catch { r = null; }
     }
-    if (S.activeLink !== myLink) return;                            // user went back / picked another one
+    if (S.activeLink !== myLink) return;
 
-    // blocked = all proxy layers failed; server now returns this uncached so each retry is a real attempt
-    if (r?.ok && r.data?.reason === 'blocked' && attempt < MAX_BLOCKED - 1) {
+    if (r?.ok && r.data?.reason === 'blocked') {
       const p = wrap.querySelector('p');
-      if (p) p.textContent = `Link dhoondh rahe hain... (${attempt + 2}/${MAX_BLOCKED})`;
-      await new Promise(res => setTimeout(res, 1500));
+      if (p) p.textContent = attempt < 4 ? 'Link dhoondh rahe hain...' : `Thoda time lag raha hai... (${attempt + 1})`;
+      await new Promise(res => setTimeout(res, 1000));
       if (S.activeLink !== myLink) return;
       return fetchServers(attempt + 1);
     }
 
     if (r && r.ok && r.data) return renderFFServerButtons(r.data, title, qual, size, () => { PREFETCH.delete(myLink.fid); show1(); });
-    // network/timeout failure — one silent retry, then manual button
-    if (attempt < 1) return fetchServers(1);
-    track('server_error', { title, qual, reason: 'timeout' });
-    showRetry(wrap, 'Server links nahi mile', 'Connection ya server slow hai', () => { PREFETCH.delete(myLink.fid); show1(); });
+    // network/timeout — 2s gap, infinite retry
+    const p = wrap.querySelector('p');
+    if (p) p.textContent = 'Connection slow hai, retry ho rahi hai...';
+    await new Promise(res => setTimeout(res, 2000));
+    if (S.activeLink !== myLink) return;
+    return fetchServers(attempt + 1);
   };
   const show1 = () => {
     wrap.innerHTML = `<div class="state-wrap" style="display:flex"><div class="spinner"></div><p>Servers dhoondh rahe hain...</p></div>`;
-    const slow = setTimeout(() => { const p = wrap.querySelector('p'); if (p && !p.textContent.includes('/')) p.textContent = 'Thoda time lag raha hai, ruko...'; }, 4000);
-    fetchServers(0).finally(() => clearTimeout(slow));
+    fetchServers(0);
   };
   fetchServers(0);
 }
@@ -907,6 +904,7 @@ function hideFilesLoading() { hideEl('filesLoading'); }
 
 // back from download screen
 function handleBackToFiles() {
+  S.activeLink = null;
   show('files');
   if (!S.movie) { show('results'); return; }
 

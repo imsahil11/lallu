@@ -397,7 +397,7 @@ async function loadWarmProxiesFromRedis() {
     const raw = await redisCmd('get', 'lallu:warm-proxies');
     if (!raw) return;
     const data = JSON.parse(raw);
-    const cutoff = Date.now() - 60 * 60_000;  // use max TTL (drive proxies stay warm 60 min)
+    const cutoff = Date.now() - 6 * 60 * 60_000;  // 6hr — matches Redis TTL
     data.forEach(([proxy, ts]) => { if (ts > cutoff) WARM_PROXIES.set(proxy, ts); });
     if (WARM_PROXIES.size) console.log(`[warm] loaded ${WARM_PROXIES.size} warm proxies from redis`);
   } catch {}
@@ -406,7 +406,7 @@ async function loadWarmProxiesFromRedis() {
 function persistWarmProxies() {
   if (!process.env.UPSTASH_REDIS_REST_URL || !WARM_PROXIES.size) return;
   const data = JSON.stringify([...WARM_PROXIES.entries()]);
-  redisCmd('setex', 'lallu:warm-proxies', '1800', data).catch(() => {});
+  redisCmd('setex', 'lallu:warm-proxies', '21600', data).catch(() => {});
 }
 
 
