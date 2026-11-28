@@ -708,7 +708,28 @@ function parseServersHtml(html) {
              || all.find(a => CLOUD_HOSTS.test(host(a)))
              || all.find(a => /\bcloud\b/i.test(a.text) && !NOT_CLOUD.test(a.href) && !isFilesdl(a));
 
-  return { fffast: ff ? ff.href : null, cloud: cloud ? cloud.href : null, anchors: btn.length };
+  // pixeldrain: the "Pixeldrain" buttons go through a redirect mirror (…iwebp.store/u/ID?download ->
+  // pixeldrain.dev/u/ID). The same id works on pixeldrain's own API as a direct file download (no page).
+  const pixel = [...new Set(all
+    .map(a => (a.href.match(/^https:\/\/(?:[^/]*\.)?(?:iwebp\.store|pixeldrain\.[a-z]+)\/(?:u|api\/file)\/([A-Za-z0-9]{6,})/i) || [])[1])
+    .filter(Boolean))]
+    .map(id => `https://pixeldrain.dev/api/file/${id}?download`);
+
+  return { fffast: ff ? ff.href : null, cloud: cloud ? cloud.href : null, pixel, anchors: btn.length };
+}
+
+// true if `url` (after redirects) starts serving an actual file, not an error page. Only 1 byte is asked for.
+async function servesFile(url, ms = 3_000) {
+  try {
+    const r = await fetch(url, {
+      headers: { Range: 'bytes=0-0', 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36' },
+      signal: AbortSignal.timeout(ms),
+      redirect: 'follow',
+    });
+    const type = r.headers.get('content-type') || '';
+    try { await r.body?.cancel(); } catch {}
+    return (r.status === 200 || r.status === 206) && !/^text\/|json/i.test(type);
+  } catch { return null; }   // timeout / unreachable: unknown
 }
 
 // filesdl sits behind a load balancer (new1 -> new6, drive -> new8 ...). proxies tunnel with CONNECT
@@ -933,7 +954,13 @@ app.get('/api/servers', async (req, res) => {
       return res.json(payload);
     }
 
-    const { fffast: rawFffast, cloud: rawCloud, anchors } = parseServersHtml(html);
+    const { fffast: rawFffast, cloud: rawCloud, pixel: rawPixel, anchors } = parseServersHtml(html);
+
+    // Pixeldrain (third server): the first copy that actually serves the file. Checked alongside the rest.
+    const pixelCheck = (async () => {
+      for (const u of rawPixel) if (await servesFile(u)) return u;
+      return null;
+    })();
 
     // Check fffast end-to-end. It answers with a redirect to Google (video-downloads.googleusercontent.com),
     // and for many files that final Google link is gone (404 page) — the old check only looked for 502/503,
@@ -965,8 +992,9 @@ app.get('/api/servers', async (req, res) => {
       cloudUrl = `${FD_WORKER}?s=${encodeURIComponent(WORKER_SECRET)}&url=${encodeURIComponent(rawUrl)}`;
     }
 
-    const payload = { cloud: cloudUrl, fffast };
-    if (!cloudUrl && !fffast) {
+    const pixel = await pixelCheck;
+    const payload = { cloud: cloudUrl, fffast, pixel };
+    if (!cloudUrl && !fffast && !pixel) {
       // page loaded fine but we found neither: either the site stopped offering them for this file,
       // or it changed its markup (no recognisable download buttons at all)
       payload.reason = anchors === 0 ? 'format_changed' : 'not_offered';

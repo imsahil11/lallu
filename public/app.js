@@ -541,10 +541,10 @@ function openFFDownload(link) {
 function renderFFServerButtons(data, title, qual, size, onRetry) {
   const hasShare = !!navigator.share;
   const wrap = $('ffServersWrap');
-  if (!data.fffast && !data.cloud) {
+  if (!data.fffast && !data.cloud && !data.pixel) {
     const msgs = {
       blocked:        'Server abhi busy / blocked hai, thodi der baad dobara try karo',
-      not_offered:    'Is quality ke liye Fast/Cloud server nahi hai, dusri quality try karo',
+      not_offered:    'Is quality ke liye Fast/Cloud/Pixeldrain server nahi hai, dusri quality try karo',
       format_changed: 'Site ka format badal gaya lagta hai, developer ko batao',
     };
     // "blocked" after exhausting all auto-retries — show manual retry with explanation
@@ -607,6 +607,34 @@ function renderFFServerButtons(data, title, qual, size, onRetry) {
     }, { passive: true });
     const sc = card2.querySelector('#shareCloud');
     if (sc) sc.addEventListener('click', () => { navigator.share({ title, url: data.cloud }).catch(() => {}); track('link_share', { title, qual, source: 'Cloud' }); }, { passive: true });
+  }
+
+  // Pixeldrain: a direct file link from pixeldrain's own API (download starts at once, no page/ads).
+  if (data.pixel) {
+    const card3 = document.createElement('div');
+    card3.className = 'dl-action-card';
+    card3.style.marginTop = (data.fffast || data.cloud) ? '12px' : '0';
+    card3.innerHTML = `
+      <div class="dl-action-top">
+        <div class="dl-action-ico">🚀</div>
+        <div class="dl-action-info">
+          <div class="dl-action-title">Pixeldrain</div>
+          <div class="dl-action-sub">${(data.fffast || data.cloud) ? 'Tez · Direct file' : '⭐ Recommended · Direct file'}</div>
+        </div>
+        <div class="dl-action-btns">
+          <button class="btn-copy" id="copyPixel">📋 Copy</button>
+          ${hasShare ? '<button class="btn-share" id="sharePixel">📤 Share</button>' : ''}
+        </div>
+      </div>
+      <a class="btn-dl" href="${esc(data.pixel)}" target="_blank" rel="noopener noreferrer">🚀 Pixeldrain Download</a>`;
+    wrap.appendChild(card3);
+    card3.querySelector('a.btn-dl').addEventListener('click', () => { track('download_start', { title, qual, source: 'Pixeldrain' }); }, { passive: true });
+    card3.querySelector('#copyPixel').addEventListener('click', () => {
+      navigator.clipboard.writeText(data.pixel).then(() => toast('📋 Pixeldrain link copy ho gaya!')).catch(() => {});
+      track('link_copy', { title, qual, source: 'Pixeldrain' });
+    }, { passive: true });
+    const sp = card3.querySelector('#sharePixel');
+    if (sp) sp.addEventListener('click', () => { navigator.share({ title, url: data.pixel }).catch(() => {}); track('link_share', { title, qual, source: 'Pixeldrain' }); }, { passive: true });
   }
 }
 
