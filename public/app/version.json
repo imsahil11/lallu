@@ -1,0 +1,24 @@
+{
+    "version":  "1.0.1",
+    "build":  2,
+    "mandatory":  false,
+    "notes":  [
+                  "Downloads ab app band hone pe bhi chalte rehte hain - asli speed ke saath",
+                  "Online dekhna tez aur smooth, quality badalne pe wahi time se",
+                  "Pixeldrain server jud gaya, Fast server ki galti theek",
+                  "Naya update app khud batayega"
+              ],
+    "apks":  {
+                 "arm64-v8a":  {
+                                   "url":  "https://lallu.vercel.app/app/lallu-2-arm64-v8a.apk",
+                                   "sha256":  "5b36e36736085a88c9bf72675261af6647a59e86ae28ceea1c92c87e60322581",
+                                   "size":  34214503
+                               },
+                 "armeabi-v7a":  {
+                                     "url":  "https://lallu.vercel.app/app/lallu-2-armeabi-v7a.apk",
+                                     "sha256":  "37ba40a7052f771ecbf5cef4fbfdfc23fcd1d44a74b96b83192e8d2ee6f45ddd",
+                                     "size":  31313989
+                                 }
+             },
+    "published":  "2026-11-28T13:35:56Z"
+}

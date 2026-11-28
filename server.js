@@ -935,14 +935,24 @@ app.get('/api/servers', async (req, res) => {
 
     const { fffast: rawFffast, cloud: rawCloud, anchors } = parseServersHtml(html);
 
-    // Quick HEAD check on fffast — detects 502 Bad Gateway (file server down).
-    // 500ms cap: 502 responses come back in ~50-150ms so this is reliable.
-    // On timeout or non-5xx error: keep fffast (conservative — don't penalise slow connections).
+    // Check fffast end-to-end. It answers with a redirect to Google (video-downloads.googleusercontent.com),
+    // and for many files that final Google link is gone (404 page) — the old check only looked for 502/503,
+    // so users got a dead "Fast" button. Ask for the first byte at the final address: a real file answers
+    // 200/206 with a non-HTML type; a 4xx/5xx or an HTML page means the file isn't there → hide fffast.
+    // On a timeout keep it (don't penalise a slow hop).
     let fffast = rawFffast;
     if (rawFffast) {
       try {
-        const r = await fetch(rawFffast, { method: 'HEAD', signal: AbortSignal.timeout(500), redirect: 'follow' });
-        if (r.status === 502 || r.status === 503) { fffast = null; console.log(`[servers] fffast down (${r.status}) for ${dltype}/${fid}`); }
+        const r = await fetch(rawFffast, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-0', 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36' },
+          signal: AbortSignal.timeout(3_000),
+          redirect: 'follow',
+        });
+        const type = r.headers.get('content-type') || '';
+        try { await r.body?.cancel(); } catch {}
+        const ok = (r.status === 200 || r.status === 206) && !/^text\//i.test(type);
+        if (!ok) { fffast = null; console.log(`[servers] fffast dead (${r.status} ${type}) for ${dltype}/${fid}`); }
       } catch { /* timeout or unreachable — treat fffast as healthy */ }
     }
 

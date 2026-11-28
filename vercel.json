@@ -5,9 +5,22 @@
     {
       "src": "server.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "public/app/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
+    {
+      "src": "/app/version.json",
+      "headers": { "Cache-Control": "no-cache, no-store, must-revalidate" },
+      "dest": "/public/app/version.json"
+    },
+    {
+      "src": "/app/(.*)",
+      "dest": "/public/app/$1"
+    },
     {
       "src": "/(.*)",
       "dest": "server.js"
